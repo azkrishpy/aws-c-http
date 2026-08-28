@@ -137,7 +137,10 @@ struct aws_http2_stream_manager_options {
      */
     size_t connection_ping_timeout_ms;
 
-    /* TODO: More flexible policy about the connections, but will always has these three values below. */
+    /**
+     * The connection policy is expressed by the three values below. They are the stable part of the interface:
+     * a more flexible policy could be added alongside them, but these will keep working.
+     */
     /**
      * Optional.
      * 0 will be considered as using a default value.
