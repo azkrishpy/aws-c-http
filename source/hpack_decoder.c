@@ -4,6 +4,10 @@
  */
 #include <aws/http/private/hpack.h>
 
+#include <aws/http/private/h2_frames.h>
+
+#include <inttypes.h>
+
 #define HPACK_LOGF(level, decoder, text, ...)                                                                          \
     AWS_LOGF_##level(AWS_LS_HTTP_DECODER, "id=%p [HPACK]: " text, (decoder)->log_id, __VA_ARGS__)
 #define HPACK_LOG(level, decoder, text) HPACK_LOGF(level, decoder, "%s", text)
@@ -26,6 +30,14 @@ void aws_hpack_decoder_init(struct aws_hpack_decoder *decoder, struct aws_alloca
 
     decoder->dynamic_table_protocol_max_size_setting.latest_value =
         aws_hpack_get_dynamic_table_max_size(&decoder->context);
+
+    /* Default to the initial value of SETTINGS_MAX_HEADER_LIST_SIZE. The owner should keep this in sync with the
+     * setting via aws_hpack_decoder_set_max_string_length(). */
+    decoder->max_string_length = aws_h2_settings_initial[AWS_HTTP2_SETTINGS_MAX_HEADER_LIST_SIZE];
+}
+
+void aws_hpack_decoder_set_max_string_length(struct aws_hpack_decoder *decoder, size_t max_string_length) {
+    decoder->max_string_length = max_string_length;
 }
 
 void aws_hpack_decoder_clean_up(struct aws_hpack_decoder *decoder) {
@@ -182,6 +194,17 @@ int aws_hpack_decode_string(
                     return aws_raise_error(AWS_ERROR_OVERFLOW_DETECTED);
                 }
 
+                /* Reject an oversized string as soon as its length is known, so a peer can't make us buffer it. */
+                if (decoder->max_string_length && progress->length > decoder->max_string_length) {
+                    HPACK_LOGF(
+                        ERROR,
+                        decoder,
+                        "Decoded string length of %" PRIu64 " exceeds the maximum of %zu",
+                        progress->length,
+                        decoder->max_string_length);
+                    return aws_raise_error(AWS_ERROR_INVALID_ARGUMENT);
+                }
+
                 progress->state = HPACK_STRING_STATE_VALUE;
             } break;
 
@@ -212,11 +235,41 @@ int aws_hpack_decode_string(
 
                 /* If whole length consumed, we're done */
                 if (progress->length == 0) {
-                    /* #TODO Validate any padding bits left over in final byte of string.
-                     * "A padding not corresponding to the most significant bits of the
-                     * code for the EOS symbol MUST be treated as a decoding error" */
+                    if (progress->use_huffman) {
+                        /* RFC-7541 5.2: a string's huffman encoding is padded to a byte boundary with the most
+                         * significant bits of the EOS symbol's code, which is all 1s.
+                         * "A padding strictly longer than 7 bits MUST be treated as a decoding error. A padding not
+                         * corresponding to the most significant bits of the code for the EOS symbol MUST be treated as
+                         * a decoding error."
+                         *
+                         * Whatever the huffman decoder could not turn into a symbol is the padding. It sits in the
+                         * most significant `num_bits` bits of `working_bits`. */
+                        const uint8_t padding_num_bits = decoder->huffman_decoder.num_bits;
+                        if (padding_num_bits > 7) {
+                            HPACK_LOGF(
+                                ERROR,
+                                decoder,
+                                "Huffman encoded string has %" PRIu8 " bits of padding, max is 7",
+                                padding_num_bits);
+                            return aws_raise_error(AWS_ERROR_INVALID_ARGUMENT);
+                        }
 
-                    /* #TODO impose limits on string length */
+                        if (padding_num_bits > 0) {
+                            const uint8_t working_bits_size =
+                                (uint8_t)(sizeof(decoder->huffman_decoder.working_bits) * 8);
+                            const uint64_t padding =
+                                decoder->huffman_decoder.working_bits >> (working_bits_size - padding_num_bits);
+                            const uint64_t all_ones = ((uint64_t)1 << padding_num_bits) - 1;
+                            if (padding != all_ones) {
+                                HPACK_LOG(
+                                    ERROR,
+                                    decoder,
+                                    "Huffman encoded string padding does not match the most significant bits of the "
+                                    "EOS symbol");
+                                return aws_raise_error(AWS_ERROR_INVALID_ARGUMENT);
+                            }
+                        }
+                    }
 
                     goto handle_complete;
                 }

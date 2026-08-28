@@ -617,8 +617,10 @@ struct aws_h1_stream *aws_h1_stream_new_request(
             case AWS_HTTP_HEADER_AUTHORIZATION:
             case AWS_HTTP_HEADER_SIGNING_SECURITY_TOKEN:
             case AWS_HTTP_HEADER_SIGNING_S3SESSION_TOKEN:
-                /* TODO: move the filter to SDKs, not the http client. */
-                /* Sensitive header, do not log the value of the header */
+                /* Sensitive header, do not log the value of the header.
+                 * This redaction stays in the HTTP client on purpose: it is the last place every request passes
+                 * through, so relying on each SDK above us to redact instead would mean any that forgot leaked
+                 * credentials into logs. */
                 AWS_LOGF_TRACE(
                     AWS_LS_HTTP_STREAM,
                     "id=%p: Sending header: " PRInSTR ": ***",

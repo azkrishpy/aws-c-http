@@ -773,10 +773,13 @@ static void s_update_sm_connection_set_on_stream_finishes_synced(
     size_t ideal_num = stream_manager->ideal_concurrent_streams_per_connection;
     size_t max_num = sm_connection->max_concurrent_streams;
     /**
-     * TODO: When the MAX_CONCURRENT_STREAMS from other side changed after the initial settings. We need to:
-     * - figure out where I am
-     * - figure out where I should be
-     * - if they're different, remove from where I am, put where should be
+     * Known limitation: max_num is captured from the peer's initial SETTINGS (see s_get_sm_connection_from_connection)
+     * and is not updated if the peer changes SETTINGS_MAX_CONCURRENT_STREAMS later. Reacting to a change would mean
+     * recomputing which availability set this connection belongs in and moving it, from the settings-change callback.
+     *
+     * The consequence is bounded: the HTTP/2 connection itself always enforces the peer's current limit, so a lowered
+     * limit costs us streams that fail and are retried rather than any incorrect accounting here, and a raised limit
+     * only means we under-use the connection.
      */
     if (sm_connection->state == AWS_H2SMCST_NEARLY_FULL && cur_num < ideal_num) {
         /* this connection is back from soft limited to ideal */
@@ -895,12 +898,18 @@ static void s_make_request_task(struct aws_channel_task *task, void *arg, enum a
         (void *)pending_stream_acquisition,
         (void *)sm_connection->connection);
     bool is_shutting_down = false;
-    bool connection_new_requests_allowed = aws_http_connection_new_requests_allowed(sm_connection->connection);
+    bool put_back_to_pending_list = false;
+    /* If the task was cancelled, the channel is shutting down, which is equivalent to a closed connection. We must not
+     * re-queue the acquisition in that case, it has to be failed below. */
+    bool connection_new_requests_allowed =
+        status == AWS_TASK_STATUS_RUN_READY && aws_http_connection_new_requests_allowed(sm_connection->connection);
     { /* BEGIN CRITICAL SECTION */
         s_lock_synced_data(stream_manager);
         is_shutting_down = stream_manager->synced_data.state != AWS_H2SMST_READY;
-        if (!is_shutting_down && !connection_new_requests_allowed) {
-            /* Push the pending stream acquisition back to the list instead of failing it. */
+        if (!is_shutting_down && !connection_new_requests_allowed && status == AWS_TASK_STATUS_RUN_READY) {
+            /* Push the pending stream acquisition back to the list instead of failing it, so that it can be picked up
+             * by another connection. */
+            put_back_to_pending_list = true;
             pending_stream_acquisition->sm_connection = NULL;
             aws_linked_list_push_back(
                 &stream_manager->synced_data.pending_stream_acquisitions, &pending_stream_acquisition->node);
@@ -935,7 +944,7 @@ static void s_make_request_task(struct aws_channel_task *task, void *arg, enum a
         error_code = AWS_ERROR_HTTP_STREAM_MANAGER_SHUTTING_DOWN;
         goto error;
     }
-    if (!connection_new_requests_allowed) {
+    if (put_back_to_pending_list) {
         STREAM_MANAGER_LOGF(
             DEBUG,
             stream_manager,
@@ -943,6 +952,8 @@ static void s_make_request_task(struct aws_channel_task *task, void *arg, enum a
             "put it back to the list waiting for it to be picked up by other connection.",
             (void *)pending_stream_acquisition,
             (void *)sm_connection->connection);
+        /* The acquisition is owned by the pending list again, and may already have been picked up by another thread. */
+        pending_stream_acquisition = NULL;
         s_sm_connection_on_scheduled_stream_finishes(sm_connection, stream_manager);
         return;
     }

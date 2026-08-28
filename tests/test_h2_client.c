@@ -438,6 +438,154 @@ static int s_compare_headers(const struct aws_http_headers *expected, const stru
     return AWS_OP_SUCCESS;
 }
 
+/* Send a simple GET request and return the stream tester. `timeout_ms` is the per-request
+ * response_first_byte_timeout_ms override (0 for none). */
+static int s_send_get_request_with_first_byte_timeout(
+    struct aws_allocator *allocator,
+    struct aws_http_message **out_request,
+    struct client_stream_tester *stream_tester,
+    uint64_t timeout_ms) {
+
+    struct aws_http_message *request = aws_http2_message_new_request(allocator);
+    ASSERT_NOT_NULL(request);
+
+    struct aws_http_header request_headers_src[] = {
+        DEFINE_HEADER(":method", "GET"),
+        DEFINE_HEADER(":scheme", "https"),
+        DEFINE_HEADER(":path", "/"),
+    };
+    aws_http_message_add_header_array(request, request_headers_src, AWS_ARRAY_SIZE(request_headers_src));
+
+    struct client_stream_tester_options options = {
+        .request = request,
+        .connection = s_tester.connection,
+        .response_first_byte_timeout_ms = timeout_ms,
+    };
+    ASSERT_SUCCESS(client_stream_tester_init(stream_tester, allocator, &options));
+
+    *out_request = request;
+    return AWS_OP_SUCCESS;
+}
+
+/* The connection-level response_first_byte_timeout_ms must apply to HTTP/2 streams.
+ * Unlike HTTP/1.1, only the stream is failed, the connection survives. */
+TEST_CASE(h2_client_response_first_byte_timeout_connection) {
+    ASSERT_SUCCESS(s_tester_init(allocator, ctx));
+
+    ASSERT_SUCCESS(h2_fake_peer_send_connection_preface_default_settings(&s_tester.peer));
+    testing_channel_drain_queued_tasks(&s_tester.testing_channel);
+
+    /* With the testing channel there's no bootstrap to propagate the setting, so set it directly */
+    const uint64_t connection_timeout_ms = 200;
+    s_tester.connection->client_data->response_first_byte_timeout_ms = connection_timeout_ms;
+
+    struct aws_http_message *request = NULL;
+    struct client_stream_tester stream_tester;
+    ASSERT_SUCCESS(s_send_get_request_with_first_byte_timeout(allocator, &request, &stream_tester, 0));
+
+    /* The whole request is sent, so the clock is now running, but nothing has timed out yet */
+    testing_channel_drain_queued_tasks(&s_tester.testing_channel);
+    ASSERT_FALSE(stream_tester.complete);
+    const uint32_t stream_id = aws_http_stream_get_id(stream_tester.stream);
+
+    /* Sleep past the timeout */
+    aws_thread_current_sleep(
+        aws_timestamp_convert(connection_timeout_ms + 1, AWS_TIMESTAMP_MILLIS, AWS_TIMESTAMP_NANOS, NULL));
+    testing_channel_drain_queued_tasks(&s_tester.testing_channel);
+
+    ASSERT_TRUE(stream_tester.complete);
+    ASSERT_INT_EQUALS(AWS_ERROR_HTTP_RESPONSE_FIRST_BYTE_TIMEOUT, stream_tester.on_complete_error_code);
+
+    /* The stream was reset, and the connection was left alone */
+    ASSERT_SUCCESS(h2_fake_peer_decode_messages_from_testing_channel(&s_tester.peer));
+    ASSERT_NOT_NULL(
+        h2_decode_tester_find_stream_frame(&s_tester.peer.decode, AWS_H2_FRAME_T_RST_STREAM, stream_id, 0, NULL));
+    ASSERT_TRUE(aws_http_connection_is_open(s_tester.connection));
+
+    aws_http_message_release(request);
+    client_stream_tester_clean_up(&stream_tester);
+    return s_tester_clean_up();
+}
+
+/* A per-request response_first_byte_timeout_ms must override the connection-level one */
+TEST_CASE(h2_client_response_first_byte_timeout_request_override) {
+    ASSERT_SUCCESS(s_tester_init(allocator, ctx));
+
+    ASSERT_SUCCESS(h2_fake_peer_send_connection_preface_default_settings(&s_tester.peer));
+    testing_channel_drain_queued_tasks(&s_tester.testing_channel);
+
+    /* Connection-level timeout is long enough that it cannot be what fires */
+    s_tester.connection->client_data->response_first_byte_timeout_ms = 10000;
+
+    const uint64_t request_timeout_ms = 100;
+    struct aws_http_message *request = NULL;
+    struct client_stream_tester stream_tester;
+    ASSERT_SUCCESS(s_send_get_request_with_first_byte_timeout(allocator, &request, &stream_tester, request_timeout_ms));
+
+    testing_channel_drain_queued_tasks(&s_tester.testing_channel);
+    ASSERT_FALSE(stream_tester.complete);
+
+    aws_thread_current_sleep(
+        aws_timestamp_convert(request_timeout_ms + 1, AWS_TIMESTAMP_MILLIS, AWS_TIMESTAMP_NANOS, NULL));
+    testing_channel_drain_queued_tasks(&s_tester.testing_channel);
+
+    ASSERT_TRUE(stream_tester.complete);
+    ASSERT_INT_EQUALS(AWS_ERROR_HTTP_RESPONSE_FIRST_BYTE_TIMEOUT, stream_tester.on_complete_error_code);
+    ASSERT_TRUE(aws_http_connection_is_open(s_tester.connection));
+
+    aws_http_message_release(request);
+    client_stream_tester_clean_up(&stream_tester);
+    return s_tester_clean_up();
+}
+
+/* Once the response starts arriving the timeout must be cancelled, even if the response body takes
+ * longer than the timeout to finish. */
+TEST_CASE(h2_client_response_first_byte_timeout_not_triggered_after_response_begins) {
+    ASSERT_SUCCESS(s_tester_init(allocator, ctx));
+
+    ASSERT_SUCCESS(h2_fake_peer_send_connection_preface_default_settings(&s_tester.peer));
+    testing_channel_drain_queued_tasks(&s_tester.testing_channel);
+
+    const uint64_t request_timeout_ms = 100;
+    struct aws_http_message *request = NULL;
+    struct client_stream_tester stream_tester;
+    ASSERT_SUCCESS(s_send_get_request_with_first_byte_timeout(allocator, &request, &stream_tester, request_timeout_ms));
+    testing_channel_drain_queued_tasks(&s_tester.testing_channel);
+
+    /* Peer sends response headers (the "first byte"), but does not end the stream */
+    struct aws_http_header response_headers_src[] = {
+        DEFINE_HEADER(":status", "200"),
+    };
+    struct aws_http_headers *response_headers = aws_http_headers_new(allocator);
+    aws_http_headers_add_array(response_headers, response_headers_src, AWS_ARRAY_SIZE(response_headers_src));
+    struct aws_h2_frame *response_frame = aws_h2_frame_new_headers(
+        allocator, aws_http_stream_get_id(stream_tester.stream), response_headers, false /*end_stream*/, 0, NULL);
+    ASSERT_SUCCESS(h2_fake_peer_send_frame(&s_tester.peer, response_frame));
+    testing_channel_drain_queued_tasks(&s_tester.testing_channel);
+
+    /* Now wait longer than the timeout. It must NOT fire, because the response already started. */
+    aws_thread_current_sleep(
+        aws_timestamp_convert(request_timeout_ms + 1, AWS_TIMESTAMP_MILLIS, AWS_TIMESTAMP_NANOS, NULL));
+    testing_channel_drain_queued_tasks(&s_tester.testing_channel);
+
+    ASSERT_FALSE(stream_tester.complete);
+    ASSERT_TRUE(aws_http_connection_is_open(s_tester.connection));
+
+    /* Let the response finish normally */
+    ASSERT_SUCCESS(h2_fake_peer_send_data_frame_str(
+        &s_tester.peer, aws_http_stream_get_id(stream_tester.stream), "hello", true /*end_stream*/));
+    testing_channel_drain_queued_tasks(&s_tester.testing_channel);
+
+    ASSERT_TRUE(stream_tester.complete);
+    ASSERT_INT_EQUALS(AWS_ERROR_SUCCESS, stream_tester.on_complete_error_code);
+    ASSERT_INT_EQUALS(200, stream_tester.response_status);
+
+    aws_http_headers_release(response_headers);
+    aws_http_message_release(request);
+    client_stream_tester_clean_up(&stream_tester);
+    return s_tester_clean_up();
+}
+
 /* Test that a simple request/response can be carried to completion.
  * The request consists of a single HEADERS frame and the response consists of a single HEADERS frame. */
 TEST_CASE(h2_client_stream_complete) {
@@ -3935,6 +4083,104 @@ TEST_CASE(h2_client_change_settings_failed_no_ack_received) {
     /* clean up */
     aws_http_library_clean_up();
     return AWS_OP_SUCCESS;
+}
+
+/* When manual window management is off (automatic window update is on), aws_http_stream_update_window() is not
+ * supported and must be ignored, rather than sending a second WINDOW_UPDATE on top of the automatic one. */
+TEST_CASE(h2_client_manual_updated_window_ignored_when_automatical_on) {
+    /* stream manual window management OFF, so window updates are automatic */
+    ASSERT_SUCCESS(s_manual_window_management_tester_init(
+        allocator, false /*conn*/, false /*stream*/, AWS_H2_INIT_WINDOW_SIZE, ctx));
+    ASSERT_SUCCESS(h2_fake_peer_send_connection_preface_default_settings(&s_tester.peer));
+    testing_channel_drain_queued_tasks(&s_tester.testing_channel);
+
+    struct aws_http_message *request = aws_http2_message_new_request(allocator);
+    ASSERT_NOT_NULL(request);
+    struct aws_http_header request_headers_src[] = {
+        DEFINE_HEADER(":method", "GET"),
+        DEFINE_HEADER(":scheme", "https"),
+        DEFINE_HEADER(":path", "/"),
+    };
+    aws_http_message_add_header_array(request, request_headers_src, AWS_ARRAY_SIZE(request_headers_src));
+
+    struct client_stream_tester stream_tester;
+    ASSERT_SUCCESS(s_stream_tester_init(&stream_tester, request));
+    testing_channel_drain_queued_tasks(&s_tester.testing_channel);
+
+    const uint32_t stream_id = aws_http_stream_get_id(stream_tester.stream);
+    struct aws_h2_stream *h2_stream = AWS_CONTAINER_OF(stream_tester.stream, struct aws_h2_stream, base);
+    const uint32_t window_before = h2_stream->thread_data.window_size_self;
+
+    /* Ask for a window increment. It must be ignored, since we are not in manual mode. */
+    aws_http_stream_update_window(stream_tester.stream, 1024);
+    testing_channel_drain_queued_tasks(&s_tester.testing_channel);
+
+    ASSERT_UINT_EQUALS(window_before, h2_stream->thread_data.window_size_self);
+
+    /* And no WINDOW_UPDATE frame was sent for this stream */
+    ASSERT_SUCCESS(h2_fake_peer_decode_messages_from_testing_channel(&s_tester.peer));
+    ASSERT_NULL(
+        h2_decode_tester_find_stream_frame(&s_tester.peer.decode, AWS_H2_FRAME_T_WINDOW_UPDATE, stream_id, 0, NULL));
+    ASSERT_TRUE(aws_http_connection_is_open(s_tester.connection));
+
+    aws_http_message_release(request);
+    client_stream_tester_clean_up(&stream_tester);
+    return s_tester_clean_up();
+}
+
+/* A window update requested on a stream that has not been activated yet (API state INIT) must not be sent, since the
+ * stream has no id on the wire yet. */
+TEST_CASE(h2_client_manual_stream_updated_window_ignored_invalid_state) {
+    ASSERT_SUCCESS(s_manual_window_management_tester_init(
+        allocator, false /*conn*/, true /*stream*/, AWS_H2_INIT_WINDOW_SIZE, ctx));
+    ASSERT_SUCCESS(h2_fake_peer_send_connection_preface_default_settings(&s_tester.peer));
+    testing_channel_drain_queued_tasks(&s_tester.testing_channel);
+
+    struct aws_http_message *request = aws_http2_message_new_request(allocator);
+    ASSERT_NOT_NULL(request);
+    struct aws_http_header request_headers_src[] = {
+        DEFINE_HEADER(":method", "GET"),
+        DEFINE_HEADER(":scheme", "https"),
+        DEFINE_HEADER(":path", "/"),
+    };
+    aws_http_message_add_header_array(request, request_headers_src, AWS_ARRAY_SIZE(request_headers_src));
+
+    /* Create the stream but deliberately do NOT activate it */
+    struct aws_http_make_request_options options = {
+        .self_size = sizeof(options),
+        .request = request,
+    };
+    struct aws_http_stream *stream = aws_http_connection_make_request(s_tester.connection, &options);
+    ASSERT_NOT_NULL(stream);
+
+    struct aws_h2_stream *h2_stream = AWS_CONTAINER_OF(stream, struct aws_h2_stream, base);
+    const uint32_t window_before = h2_stream->thread_data.window_size_self;
+
+    /* Request a window update while the stream is still in the INIT api state */
+    aws_http_stream_update_window(stream, 1024);
+    testing_channel_drain_queued_tasks(&s_tester.testing_channel);
+
+    /* Nothing was applied and no frame went out, and the connection is unharmed */
+    ASSERT_UINT_EQUALS(window_before, h2_stream->thread_data.window_size_self);
+    ASSERT_SUCCESS(h2_fake_peer_decode_messages_from_testing_channel(&s_tester.peer));
+
+    /* No *stream-level* WINDOW_UPDATE was sent. Connection-level ones (stream id 0) are normal traffic and expected. */
+    size_t search_idx = 0;
+    while (true) {
+        size_t found_idx = 0;
+        struct h2_decoded_frame *frame =
+            h2_decode_tester_find_frame(&s_tester.peer.decode, AWS_H2_FRAME_T_WINDOW_UPDATE, search_idx, &found_idx);
+        if (frame == NULL) {
+            break;
+        }
+        ASSERT_UINT_EQUALS(0, frame->stream_id);
+        search_idx = found_idx + 1;
+    }
+    ASSERT_TRUE(aws_http_connection_is_open(s_tester.connection));
+
+    aws_http_stream_release(stream);
+    aws_http_message_release(request);
+    return s_tester_clean_up();
 }
 
 /* Test manual window management for stream successfully disabled the automatically window update */

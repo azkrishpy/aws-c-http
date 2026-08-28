@@ -124,14 +124,16 @@ enum aws_http_connection_manager_count_type {
  * READY - connections may be acquired and released.  When the external ref count for the manager
  * drops to zero, the manager moves to:
  *
- * SHUTTING_DOWN - connections may no longer be acquired and released (how could they if the external
- * ref count was accurate?)
+ * SHUTTING_DOWN - connections may no longer be acquired, but connections that were already vended may (and must)
+ * still be released.  Releasing the manager only drops the external ref; a user is not required to hand back every
+ * connection first, so the release path stays fully functional in this state.
  * While in this state, we wait for a set of tracking counters to all fall to zero:
  *
  *   pending_connect_count - the # of unresolved calls to the http layer's connect logic
  *   open_connection_count - the # of connections for whom the shutdown callback (from http) has not been invoked
- *   vended_connection_count - the # of connections held by external users that haven't been released.  Under correct
- *      usage this should be zero before SHUTTING_DOWN is entered, but we attempt to handle incorrect usage gracefully.
+ *   vended_connection_count - the # of connections held by external users that haven't been released.  This can only
+ *      reach zero via aws_http_connection_manager_release_connection(), which is why releasing is still permitted
+ *      while SHUTTING_DOWN.  Under-flowing it is a user error, which we fail gracefully rather than crash on.
  *
  * While all the counter fall to zero and no outlive transition, connection manager will detroy itself.
  *
@@ -1377,7 +1379,6 @@ int aws_http_connection_manager_release_connection(
         (void *)connection);
 
     aws_mutex_lock(&manager->lock);
-    AWS_FATAL_ASSERT(manager->state == AWS_HCMST_READY);
 
     /* We're probably hosed in this case, but let's not underflow */
     if (manager->internal_ref[AWS_HCMCT_VENDED_CONNECTION] == 0) {

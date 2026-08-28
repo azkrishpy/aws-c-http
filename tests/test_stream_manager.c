@@ -558,8 +558,8 @@ static int s_sm_stream_acquiring_customize_request(
         .user_data = &s_tester,
     };
     for (int i = 0; i < num_streams; ++i) {
-        /* TODO: Test the callback will always be fired asynced, as now the CM cannot ensure the callback happens
-         * asynchronously, we cannot ensure it as well. */
+        /* Note: we do not assert that the acquisition callback fires asynchronously. The stream manager inherits
+         * that from the connection manager, which does not guarantee it, so neither can we. */
         aws_http2_stream_manager_acquire_stream(s_tester.stream_manager, &acquire_stream_option);
     }
     return AWS_OP_SUCCESS;
@@ -1305,8 +1305,12 @@ TEST_CASE(h2_sm_with_flow_control_err) {
 /* Test that stream manager can be created with initial_settings_array configured */
 TEST_CASE(h2_sm_with_initial_settings) {
     (void)ctx;
-    /* TODO: VALIDATE from the peer that those settings received. For now we test this with settings to override the
-     * initial window. */
+    /**
+     * Note: this asserts the settings take effect locally (via the initial-window override, which is observable in
+     * how much we let the peer send) rather than asserting the peer received them. These h2_sm_* tests run against
+     * the mock server, which does not report the SETTINGS it received back to the test. Wire-level assertions on
+     * SETTINGS are covered by the h2_client_* tests, which use a fake peer that decodes what we sent.
+     */
     /* Configure custom HTTP/2 initial settings */
     struct aws_http2_setting initial_settings[] = {
         {
@@ -1711,8 +1715,7 @@ static int s_sm_stream_acquiring_with_body(int num_streams) {
         DEFINE_HEADER("x-upload-test", "true"),
     };
     for (int i = 0; i < num_streams; ++i) {
-        /* TODO: Test the callback will always be fired asynced, as now the CM cannot ensure the callback happens
-         * asynchronously, we cannot ensure it as well. */
+        /* Note: as above, callback asynchrony is not asserted, the connection manager does not guarantee it. */
         struct aws_http_message *request = aws_http2_message_new_request(s_tester.allocator);
         aws_http_message_add_header_array(request, request_headers_src, AWS_ARRAY_SIZE(request_headers_src));
         struct aws_input_stream *body_stream =

@@ -2037,10 +2037,10 @@ static int s_try_process_next_stream_read_message(struct aws_h1_connection *conn
 
     /* Don't process more data than the stream's window can accept.
      *
-     * TODO: Let the decoder know about stream-window size so it can stop itself,
-     * instead of limiting the amount of data we feed into the decoder at a time.
-     * This would be more optimal, AND avoid an edge-case where the stream-window goes
-     * to 0 as the body ends, and the connection can't proceed to the trailing headers.
+     * Note: we bound the input we hand the decoder rather than teaching the decoder the stream-window size and
+     * letting it stop itself. Telling the decoder would be more efficient, and would fix an edge case this approach
+     * has: if the stream-window reaches 0 exactly as the body ends, we feed the decoder nothing further, so the
+     * connection cannot advance to the trailing headers until the window opens again.
      */
     message_cursor.len = (size_t)aws_min_u64(message_cursor.len, stream_window);
 
@@ -2302,9 +2302,11 @@ static void s_pull_up_stats_timestamps(struct aws_h1_connection *connection) {
 static void s_gather_statistics(struct aws_channel_handler *handler, struct aws_array_list *stats) {
     struct aws_h1_connection *connection = handler->impl;
 
-    /* TODO: Need update the way we calculate statistics, to account for user-controlled pauses.
-     * If user is adding chunks 1 by 1, there can naturally be a gap in the upload.
-     * If the user lets the stream-window go to zero, there can naturally be a gap in the download. */
+    /**
+     * Note: these timestamps measure wall-clock time with a stream in flight, so a gap the user created counts
+     * against the connection the same as a gap the network created. Feeding chunks one at a time, or letting the
+     * stream-window sit at zero, both look like an idle connection here.
+     */
     s_pull_up_stats_timestamps(connection);
 
     void *stats_base = &connection->thread_data.stats;

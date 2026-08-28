@@ -1689,4 +1689,7 @@ void aws_h2_decoder_set_setting_max_frame_size(struct aws_h2_decoder *decoder, u
 
 void aws_h2_decoder_set_setting_max_header_list_size(struct aws_h2_decoder *decoder, uint32_t data) {
     decoder->settings.max_header_list_size = data;
+    /* A single header field's name.len + value.len + 32 must fit within the limit, so no one string can usefully
+     * exceed it. Telling the hpack-decoder lets it reject an oversized string before buffering it. */
+    aws_hpack_decoder_set_max_string_length(&decoder->hpack, data);
 }

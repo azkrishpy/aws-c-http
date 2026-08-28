@@ -4,13 +4,21 @@
  */
 #include <aws/http/private/hpack.h>
 
-/* #TODO remove all OOM error handling in HTTP/2 & HPACK. make functions void if possible */
-
 /* RFC-7540 6.5.2 */
 const size_t s_hpack_dynamic_table_initial_size = 4096;
 const size_t s_hpack_dynamic_table_initial_elements = 512;
-/* TODO: shouldn't be a hardcoded max_size, it should be driven by SETTINGS_HEADER_TABLE_SIZE */
+/**
+ * The largest dynamic table this implementation is willing to allocate.
+ *
+ * SETTINGS_HEADER_TABLE_SIZE is what drives the table size in practice, but it cannot be the only bound: the setting
+ * is any uint32, and it is chosen by the peer. This is the ceiling we impose on top of it so that the peer cannot
+ * make us allocate arbitrary amounts of memory.
+ */
 const size_t s_hpack_dynamic_table_max_size = 16 * 1024 * 1024;
+
+size_t aws_hpack_get_max_supported_dynamic_table_size(void) {
+    return s_hpack_dynamic_table_max_size;
+}
 
 struct aws_http_header s_static_header_table[] = {
 #define HEADER(_index, _name)                                                                                          \
@@ -203,35 +211,29 @@ const struct aws_http_header *aws_hpack_get_header(const struct aws_hpack_contex
     return s_dynamic_table_get(context, index - s_static_header_table_size);
 }
 
-/* TODO: remove `bool search_value`, this option has no reason to exist */
 size_t aws_hpack_find_index(
     const struct aws_hpack_context *context,
     const struct aws_http_header *header,
-    bool search_value,
     bool *found_value) {
 
     *found_value = false;
 
     struct aws_hash_element *elem = NULL;
-    if (search_value) {
-        /* Check name-and-value first in static table */
-        aws_hash_table_find(&s_static_header_reverse_lookup, header, &elem);
-        if (elem) {
-            /* TODO: Maybe always set found_value to true? Who cares that the value is empty if they matched? */
-            /* If an element was found, check if it has a value */
-            *found_value = ((const struct aws_http_header *)elem->key)->value.len;
-            return (size_t)elem->value;
-        }
-        /* Check name-and-value in dynamic table */
-        aws_hash_table_find(&context->dynamic_table.reverse_lookup, header, &elem);
-        if (elem) {
-            /* TODO: Maybe always set found_value to true? Who cares that the value is empty if they matched? */
-            *found_value = ((const struct aws_http_header *)elem->key)->value.len;
-            goto trans_index_from_dynamic_table;
-        }
+    /* Check name-and-value first in static table */
+    aws_hash_table_find(&s_static_header_reverse_lookup, header, &elem);
+    if (elem) {
+        /* A hit in the reverse-lookup table means the name AND value both matched, so the value is usable as-is.
+         * That holds even when the matched value is empty. */
+        *found_value = true;
+        return (size_t)elem->value;
     }
-    /* Check the name-only table. Note, even if we search for value, when we fail in searching for name-and-value, we
-     * should also check the name only table */
+    /* Check name-and-value in dynamic table */
+    aws_hash_table_find(&context->dynamic_table.reverse_lookup, header, &elem);
+    if (elem) {
+        *found_value = true;
+        goto trans_index_from_dynamic_table;
+    }
+    /* We failed to match name-and-value, so fall back to matching the name only */
     aws_hash_table_find(&s_static_header_reverse_lookup_name_only, &header->name, &elem);
     if (elem) {
         return (size_t)elem->value;

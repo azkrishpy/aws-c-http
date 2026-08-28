@@ -35,18 +35,22 @@ void aws_hpack_encoder_set_huffman_mode(struct aws_hpack_encoder *encoder, enum 
 
 void aws_hpack_encoder_update_max_table_size(struct aws_hpack_encoder *encoder, uint32_t new_max_size) {
 
+    /**
+     * The peer's SETTINGS_HEADER_TABLE_SIZE is an upper bound on how big our encoder's dynamic table MAY grow, it is
+     * not a requirement to grow that far (RFC-7541 4.2). Cap it at the largest table we support, for two reasons:
+     * - The peer does not get to decide how much memory we allocate.
+     * - The setting is any uint32, so without the cap a peer could name a size larger than we support and the
+     *   resize would fail outright, breaking the connection over a spec-legal setting.
+     */
+    const size_t capped_max_size = aws_min_size(new_max_size, aws_hpack_get_max_supported_dynamic_table_size());
+
     if (!encoder->dynamic_table_size_update.pending) {
         encoder->dynamic_table_size_update.pending = true;
     }
     encoder->dynamic_table_size_update.smallest_value =
-        aws_min_size(new_max_size, encoder->dynamic_table_size_update.smallest_value);
+        aws_min_size(capped_max_size, encoder->dynamic_table_size_update.smallest_value);
 
-    /* TODO: don't necessarily go as high as possible. The peer said the encoder's
-     * dynamic table COULD get this big, but it's not required to.
-     * It's probably not a good idea to let the peer decide how much memory we allocate.
-     * Not sure how to cap it though... Use a hardcoded number?
-     * Match whatever SETTINGS_HEADER_TABLE_SIZE this side sends? */
-    encoder->dynamic_table_size_update.latest_value = new_max_size;
+    encoder->dynamic_table_size_update.latest_value = capped_max_size;
 }
 
 /* Return a byte with the N right-most bits masked.
@@ -287,7 +291,7 @@ static int s_encode_header_field(
 
     /* Search for header-field in tables */
     bool found_indexed_value;
-    size_t header_index = aws_hpack_find_index(&encoder->context, header, true, &found_indexed_value);
+    size_t header_index = aws_hpack_find_index(&encoder->context, header, &found_indexed_value);
 
     if (header->compression != AWS_HTTP_HEADER_COMPRESSION_USE_CACHE) {
         /* If user doesn't want to use indexed value, then don't use it */
