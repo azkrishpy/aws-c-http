@@ -452,6 +452,9 @@ add_test_case(h2_client_auto_ping_ack_higher_priority)
 # arriving while a HEADERS frame is only partly encoded, where the ACK must not be injected into the middle of it.
 # Exercising that needs a way to stop the encoder mid-frame, which the fake peer cannot currently do.
 add_test_case(h2_client_auto_settings_ack)
+add_test_case(h2_client_response_first_byte_timeout_connection)
+add_test_case(h2_client_response_first_byte_timeout_request_override)
+add_test_case(h2_client_response_first_byte_timeout_not_triggered_after_response_begins)
 add_test_case(h2_client_stream_complete)
 add_test_case(h2_client_close)
 add_test_case(h2_client_connection_init_settings_applied_after_ack_by_peer)
