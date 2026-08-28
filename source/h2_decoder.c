@@ -956,7 +956,7 @@ static struct aws_h2err s_state_fn_frame_push_promise(struct aws_h2_decoder *dec
 
     if (decoder->settings.enable_push == 0) {
         /* treat the receipt of a PUSH_PROMISE frame as a connection error of type PROTOCOL_ERROR.(RFC-7540 6.5.2) */
-        DECODER_LOG(ERROR, decoder, "PUSH_PROMISE is invalid, the seting for enable push is 0");
+        DECODER_LOG(ERROR, decoder, "PUSH_PROMISE is invalid, the setting for enable push is 0");
         return aws_h2err_from_h2_code(AWS_HTTP2_ERR_PROTOCOL_ERROR);
     }
 
@@ -1689,7 +1689,5 @@ void aws_h2_decoder_set_setting_max_frame_size(struct aws_h2_decoder *decoder, u
 
 void aws_h2_decoder_set_setting_max_header_list_size(struct aws_h2_decoder *decoder, uint32_t data) {
     decoder->settings.max_header_list_size = data;
-    /* A single header field's name.len + value.len + 32 must fit within the limit, so no one string can usefully
-     * exceed it. Telling the hpack-decoder lets it reject an oversized string before buffering it. */
-    aws_hpack_decoder_set_max_string_length(&decoder->hpack, data);
+    aws_hpack_decoder_set_max_header_list_size(&decoder->hpack, data);
 }

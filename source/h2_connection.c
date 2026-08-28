@@ -438,7 +438,7 @@ static struct aws_h2_connection *s_connection_new(
         CONNECTION_LOGF(ERROR, connection, "Failed to create initial settings, %s", aws_error_name(aws_last_error()));
         goto error;
     }
-    /* We enqueue the inital settings when handler get installed */
+    /* We enqueue the initial settings when handler get installed */
     return connection;
 
 error:
@@ -554,7 +554,7 @@ static struct aws_h2_pending_settings *s_new_pending_settings(
         settings_storage_size);
 
     AWS_ZERO_STRUCT(*pending_settings);
-    /* We buffer the settings up, incase the caller has freed them when the ACK arrives */
+    /* We buffer the settings up, in case the caller has freed them when the ACK arrives */
     pending_settings->settings_array = (void *)settings_storage;
     if (add_initial_window) {
         /* insert the initial window size settings to the first of all the settings. */
@@ -564,7 +564,7 @@ static struct aws_h2_pending_settings *s_new_pending_settings(
         settings_storage = (uint8_t *)settings_storage + sizeof(struct aws_http2_setting);
     }
     if (settings_array) {
-        /* copy all passin settings to the settings storage. */
+        /* copy all passed-in settings to the settings storage. */
         memcpy(settings_storage, settings_array, passin_num_settings * sizeof(struct aws_http2_setting));
     }
     pending_settings->num_settings = num_settings;
@@ -1089,7 +1089,7 @@ struct aws_h2err s_get_active_stream_for_incoming_frame(
                 break;
             default:
                 CONNECTION_LOGF(
-                    ERROR, connection, "Invalid state fo cached closed stream, stream id=%" PRIu32, stream_id);
+                    ERROR, connection, "Invalid state for cached closed stream, stream id=%" PRIu32, stream_id);
                 return aws_h2err_from_h2_code(AWS_HTTP2_ERR_INTERNAL_ERROR);
                 break;
         }

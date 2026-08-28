@@ -2,6 +2,7 @@
  * Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
  * SPDX-License-Identifier: Apache-2.0.
  */
+#include <aws/http/private/h2_frames.h>
 #include <aws/http/private/hpack.h>
 
 #include <aws/http/private/h2_frames.h>
@@ -31,19 +32,19 @@ void aws_hpack_decoder_init(struct aws_hpack_decoder *decoder, struct aws_alloca
     decoder->dynamic_table_protocol_max_size_setting.latest_value =
         aws_hpack_get_dynamic_table_max_size(&decoder->context);
 
-    /* Default to the initial value of SETTINGS_MAX_HEADER_LIST_SIZE. The owner should keep this in sync with the
-     * setting via aws_hpack_decoder_set_max_string_length(). */
-    decoder->max_string_length = aws_h2_settings_initial[AWS_HTTP2_SETTINGS_MAX_HEADER_LIST_SIZE];
-}
-
-void aws_hpack_decoder_set_max_string_length(struct aws_hpack_decoder *decoder, size_t max_string_length) {
-    decoder->max_string_length = max_string_length;
+    /* Default to the initial SETTINGS_MAX_HEADER_LIST_SIZE value.
+     * h2_decoder updates this if the setting changes via SETTINGS frame. */
+    decoder->max_header_list_size = aws_h2_settings_initial[AWS_HTTP2_SETTINGS_MAX_HEADER_LIST_SIZE];
 }
 
 void aws_hpack_decoder_clean_up(struct aws_hpack_decoder *decoder) {
     aws_hpack_context_clean_up(&decoder->context);
     aws_byte_buf_clean_up(&decoder->progress_entry.scratch);
     AWS_ZERO_STRUCT(*decoder);
+}
+
+void aws_hpack_decoder_set_max_header_list_size(struct aws_hpack_decoder *decoder, uint64_t max_header_list_size) {
+    decoder->max_header_list_size = max_header_list_size;
 }
 
 static const struct aws_http_header *s_get_header_u64(const struct aws_hpack_decoder *decoder, uint64_t index) {
@@ -190,19 +191,11 @@ int aws_hpack_decode_string(
                     goto handle_complete;
                 }
 
-                if (progress->length > SIZE_MAX) {
-                    return aws_raise_error(AWS_ERROR_OVERFLOW_DETECTED);
-                }
-
-                /* Reject an oversized string as soon as its length is known, so a peer can't make us buffer it. */
-                if (decoder->max_string_length && progress->length > decoder->max_string_length) {
-                    HPACK_LOGF(
-                        ERROR,
-                        decoder,
-                        "Decoded string length of %" PRIu64 " exceeds the maximum of %zu",
-                        progress->length,
-                        decoder->max_string_length);
-                    return aws_raise_error(AWS_ERROR_INVALID_ARGUMENT);
+                /* Reject if the declared string length alone exceeds the header-list budget.
+                 * A single string cannot be larger than the entire allowed header-list. */
+                if (progress->length > decoder->max_header_list_size) {
+                    HPACK_LOG(ERROR, decoder, "HPACK string length exceeds SETTINGS_MAX_HEADER_LIST_SIZE");
+                    return aws_raise_error(AWS_ERROR_HTTP_PROTOCOL_ERROR);
                 }
 
                 progress->state = HPACK_STRING_STATE_VALUE;

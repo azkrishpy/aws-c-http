@@ -120,10 +120,9 @@ struct aws_hpack_decoder {
         size_t received_resize_num; /* The continuous number of dynamic table resize received during pending. */
     } dynamic_table_protocol_max_size_setting;
 
-    /* Upper bound on the length of a single decoded string (a header name or value).
-     * Bounds how much a peer can make us buffer for one string. See
-     * aws_hpack_decoder_set_max_string_length(). */
-    size_t max_string_length;
+    /* Maximum decoded header-list size (from SETTINGS_MAX_HEADER_LIST_SIZE).
+     * Individual HPACK string lengths are checked against this to prevent unbounded growth. */
+    uint64_t max_header_list_size;
 
     /* PRO TIP: Don't union progress_integer and progress_string together, since string_decode calls integer_decode */
     struct hpack_progress_integer {
@@ -278,16 +277,9 @@ void aws_hpack_decoder_clean_up(struct aws_hpack_decoder *decoder);
 AWS_HTTP_API
 void aws_hpack_decoder_update_max_table_size(struct aws_hpack_decoder *decoder, uint32_t new_max_size);
 
-/**
- * Set the maximum length of a single decoded string (a header name or value).
- *
- * HPACK itself imposes no limit, so without one a peer can declare an enormous string length and make us buffer it.
- * In HTTP/2 a single header field's name.len + value.len + 32 must fit within SETTINGS_MAX_HEADER_LIST_SIZE, so that
- * setting is a sound upper bound for any one string, and lets us reject an oversized string as soon as its length is
- * decoded, rather than after buffering all of it.
- */
+/* Update the maximum header-list size used to bound individual HPACK string lengths. */
 AWS_HTTP_API
-void aws_hpack_decoder_set_max_string_length(struct aws_hpack_decoder *decoder, size_t max_string_length);
+void aws_hpack_decoder_set_max_header_list_size(struct aws_hpack_decoder *decoder, uint64_t max_header_list_size);
 
 /**
  * Decode the next entry in the header-block-fragment.

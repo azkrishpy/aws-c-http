@@ -633,11 +633,12 @@ TEST_DECODE_ONE_BYTE_AT_A_TIME(hpack_decode_string_huffman_padding_too_long) {
     return AWS_OP_SUCCESS;
 }
 
-/* A string longer than the configured maximum must be rejected as soon as its length is decoded */
+/* A string longer than SETTINGS_MAX_HEADER_LIST_SIZE must be rejected as soon as its length is decoded.
+ * This complements the h2-level coverage by exercising the one-byte-at-a-time path. */
 TEST_DECODE_ONE_BYTE_AT_A_TIME(hpack_decode_string_exceeding_max_length) {
     struct decode_fixture *fixture = ctx;
 
-    aws_hpack_decoder_set_max_string_length(&fixture->hpack, 4);
+    aws_hpack_decoder_set_max_header_list_size(&fixture->hpack, 4);
 
     struct aws_byte_buf output;
     ASSERT_SUCCESS(aws_byte_buf_init(&output, allocator, 8));
