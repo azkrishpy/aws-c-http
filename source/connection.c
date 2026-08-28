@@ -459,8 +459,11 @@ static void s_server_bootstrap_on_accept_channel_setup(
 
         goto error;
     }
-    /* Create connection */
-    /* TODO: expose http1/2 options to server API */
+    /* Create connection.
+     *
+     * Note: server-side connections use the default HTTP/1 and HTTP/2 options. struct aws_http_server_options has no
+     * fields for them, and adding them is a public API change, so it is left to a deliberate API revision rather than
+     * done here. Clients configure these via aws_http_client_connection_options. */
     struct aws_http1_connection_options http1_options;
     AWS_ZERO_STRUCT(http1_options);
     struct aws_http2_connection_options http2_options;
@@ -710,9 +713,12 @@ struct aws_http_server *aws_http_server_new(const struct aws_http_server_options
     int listen_error = AWS_OP_SUCCESS;
 
     /*
-     * WARNING & TODO!!!!
-     * aws_server_bootstrap_new_socket_listener has async callback, we would block here waiting for
-     * setup complete. aws-c-http library need to be updated with a proper async API.
+     * WARNING: aws_http_server_new() is a synchronous API over an asynchronous bootstrap.
+     * aws_server_bootstrap_new_socket_listener() reports its result via callback, but aws_http_server_new() must
+     * return the outcome to its caller, so we block here on setup_future until that callback fires. Note this means
+     * aws_http_server_new() must never be called from an event-loop thread, or it will deadlock against the very
+     * callback it is waiting on. Fixing this properly requires an async server-creation API, which would be a
+     * breaking change to the public interface.
      */
     server->socket = aws_server_bootstrap_new_socket_listener(&bootstrap_options);
     // if server setup properly, waiting for setup callback
@@ -864,9 +870,7 @@ static void s_client_bootstrap_on_channel_setup(
         struct aws_crt_statistics_handler *http_connection_monitor =
             aws_crt_statistics_handler_new_http_connection_monitor(
                 http_bootstrap->alloc, &http_bootstrap->monitoring_options);
-        if (http_connection_monitor == NULL) {
-            goto error;
-        }
+        AWS_ASSERT(http_connection_monitor);
 
         aws_channel_set_statistics_handler(channel, http_connection_monitor);
     }
