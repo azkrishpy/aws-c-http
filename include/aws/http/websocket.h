@@ -12,9 +12,35 @@ AWS_PUSH_SANE_WARNING_LEVEL
 struct aws_http_header;
 struct aws_http_message;
 
-/* TODO: Document lifetime stuff */
-/* TODO: Document CLOSE frame behavior (when auto-sent during close, when auto-closed) */
-/* TODO: Accept payload as aws_input_stream */
+/**
+ * Lifetime
+ *
+ * An aws_websocket is reference counted. You are handed one reference by the on_connection_setup callback of
+ * aws_websocket_client_connect(), and you must eventually call aws_websocket_release() to give it back. Use
+ * aws_websocket_acquire() if you need to hold additional references.
+ *
+ * Releasing your last reference does not, by itself, shut the connection down promptly; it only relinquishes your
+ * claim on the object. To close the connection, call aws_websocket_close(). Conversely, the websocket and its
+ * channel are not cleaned up until every reference has been released, so failing to release leaks both.
+ *
+ * The on_connection_shutdown callback tells you the connection is finished, but the websocket pointer remains valid
+ * (and your reference remains yours to release) until you release it.
+ *
+ * CLOSE frame behavior
+ *
+ * A CLOSE frame is sent automatically as part of normal shutdown. When the channel shuts down in the write
+ * direction, the websocket queues an empty CLOSE frame and waits for it to be written before completing its
+ * shutdown. That automatic frame is skipped in two cases: when shutdown was asked to free scarce resources
+ * immediately, and when writing has already stopped (which is what happens once you have sent your own CLOSE frame,
+ * so your frame is the only CLOSE that goes out).
+ *
+ * Receiving a CLOSE frame does NOT automatically close the connection. The websocket stops reading and ignores any
+ * further incoming data, and the frame is delivered to your callbacks like any other, but it is up to you to call
+ * aws_websocket_close() in response.
+ *
+ * Note: an outgoing frame's payload is supplied through the stream_outgoing_payload callback of
+ * aws_websocket_send_frame_options, not as an aws_input_stream.
+ */
 
 /**
  * A websocket connection.

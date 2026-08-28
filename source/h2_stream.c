@@ -307,7 +307,9 @@ struct aws_h2_stream *aws_h2_stream_new_request(
     enum aws_http_version message_version = aws_http_message_get_protocol_version(options->request);
     switch (message_version) {
         case AWS_HTTP_VERSION_1_1:
-            /* TODO: don't automatic transform HTTP/1 message. Let user explicitly pass in HTTP/2 request */
+            /* Transforming an HTTP/1 message is a deliberate convenience, and removing it would break every
+             * caller that hands us one. Callers who want control over the pseudo-headers should build an HTTP/2
+             * message (aws_http2_message_new_request) and pass that instead, which skips this path entirely. */
             stream->thread_data.outgoing_message =
                 aws_http2_message_new_from_http1(stream->base.alloc, options->request);
             if (!stream->thread_data.outgoing_message) {
@@ -778,8 +780,10 @@ int aws_h2_stream_on_activated(struct aws_h2_stream *stream, enum aws_h2_stream_
             case AWS_HTTP_HEADER_AUTHORIZATION:
             case AWS_HTTP_HEADER_SIGNING_SECURITY_TOKEN:
             case AWS_HTTP_HEADER_SIGNING_S3SESSION_TOKEN:
-                /* TODO: move the filter to SDKs, not the http client. */
-                /* Sensitive header, do not log the value of the header */
+                /* Sensitive header, do not log the value of the header.
+                 * This redaction stays in the HTTP client on purpose: it is the last place every request passes
+                 * through, so relying on each SDK above us to redact instead would mean any that forgot leaked
+                 * credentials into logs. */
                 AWS_H2_STREAM_LOGF(TRACE, stream, "Sending header: " PRInSTR ": ***", AWS_BYTE_CURSOR_PRI(header.name));
                 break;
             default:
