@@ -435,7 +435,9 @@ add_test_case(h2_client_connection_preface_sent)
 add_test_case(h2_client_auto_ping_ack)
 add_test_case(h2_client_auto_ping_ack_higher_priority)
 
-# TODO add_test_case(h2_client_auto_ping_ack_higher_priority_not_break_encoding_frame)
+# Coverage note: h2_client_auto_ping_ack_higher_priority covers a PING ACK jumping the queue. Not covered: a PING
+# arriving while a HEADERS frame is only partly encoded, where the ACK must not be injected into the middle of it.
+# Exercising that needs a way to stop the encoder mid-frame, which the fake peer cannot currently do.
 add_test_case(h2_client_auto_settings_ack)
 add_test_case(h2_client_stream_complete)
 add_test_case(h2_client_close)
@@ -479,7 +481,9 @@ add_test_case(h2_client_conn_receive_goaway)
 add_test_case(h2_client_conn_receive_goaway_debug_data)
 add_test_case(h2_client_conn_err_invalid_last_stream_id_goaway)
 
-# TODO add_test_case(h2_client_send_goaway_with_push_promises) id of 1st should be in GOAWAY 2nd should be ignored
+# Coverage note: not covered - sending GOAWAY while push-promised streams are outstanding. The first promised
+# stream's id should be the one reported in GOAWAY, and a second promise should then be ignored. Writing this needs
+# server-push support in the test harness, and this client disables SETTINGS_ENABLE_PUSH.
 add_test_case(h2_client_change_settings_succeed)
 add_test_case(h2_client_max_header_list_size_accepts_payload_under_limit)
 add_test_case(h2_client_max_header_list_size_accepts_payload_at_exact_limit)
@@ -499,9 +503,9 @@ add_test_case(h2_client_manual_window_management_user_send_conn_window_update_wi
 add_test_case(h2_client_manual_window_management_user_send_connection_window_update_overflow_capped)
 
 # Build these when we address window_update() differences in H1 vs H2
-# TODO add_test_case(h2_client_manual_updated_window_ignored_when_automatical_on)
-# TODO add_test_case(h2_client_manual_stream_updated_window_ignored_invalid_state)
-# TODO add_test_case(h2_client_manual_window_management_window_overflow) #we cannot ensure the increment_size is safe or not, let our peer detect the maximum exceed or not. But we can test the obviously overflows here.
+# Note: the "obvious" window-update overflow is covered by the *_overflow_capped cases above. We deliberately do not
+# test an increment that only overflows once combined with the peer's view of the window, since we cannot know that
+# value; the peer is responsible for detecting it.
 add_test_case(h2_client_send_ping_successfully_receive_ack)
 add_test_case(h2_client_send_ping_no_ack_received)
 add_test_case(h2_client_conn_err_extraneous_ping_ack_received)
@@ -591,7 +595,12 @@ add_net_test_case(connection_manager_max_pending_acquisitions)
 add_net_test_case(connection_manager_max_pending_acquisitions_with_vended_connections)
 
 # Integration test that requires proxy environment in us-east-1 region.
-# TODO: test the server name validation properly
+#
+# Coverage note: these exercise the happy path, where the proxy's certificate matches the server name we set (see
+# aws_tls_connection_options_set_server_name in source/proxy_connection.c). Not covered: that a MISMATCHED server name
+# is rejected. That needs a proxy endpoint serving a cert deliberately issued for a different name, which this
+# environment does not provide. AWS_PROXY_NO_VERIFY_PEER exists to turn peer verification off, so a test that forgot to
+# set up the mismatch would silently pass.
 if(ENABLE_PROXY_INTEGRATION_TESTS)
     add_net_test_case(connection_manager_proxy_integration_forwarding_proxy_no_auth)
     add_net_test_case(connection_manager_proxy_integration_forwarding_proxy_no_auth_env)

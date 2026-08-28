@@ -22,7 +22,12 @@
 #    pragma warning(disable : 4204) /* non-constant aggregate initializer */
 #endif
 
-/* TODO: If something goes wrong during normal shutdown, do I change the error_code? */
+/**
+ * Note on error codes during shutdown: the error_code the channel gave us is passed back to the channel unchanged
+ * when our shutdown completes (see s_finish_shutdown), so a normal shutdown stays a normal shutdown. Frames that were
+ * still incomplete when we shut down are a separate matter, and are always completed with
+ * AWS_ERROR_HTTP_CONNECTION_CLOSED, since from the caller's point of view they did not get sent.
+ */
 
 struct outgoing_frame {
     struct aws_websocket_send_frame_options def;
@@ -608,7 +613,8 @@ static void s_try_write_outgoing_frames(struct aws_websocket *websocket) {
              * Clients must mask payload with key derived from an unpredictable source of entropy. */
             if (!websocket->is_server) {
                 frame.masked = true;
-                /* TODO: faster source of random (but still seeded by device_random) */
+                /* Note: a masking key is only 4 bytes and only needed once per outgoing frame, so going straight to
+                 * the device for it is not worth replacing with a userspace PRNG. */
                 struct aws_byte_buf masking_key_buf = aws_byte_buf_from_empty_array(frame.masking_key, 4);
                 err = aws_device_random_buffer(&masking_key_buf);
                 if (err) {
@@ -1066,7 +1072,8 @@ void aws_websocket_close(struct aws_websocket *websocket, bool free_scarce_resou
         return;
     }
 
-    /* TODO: aws_channel_shutdown() should let users specify error_code and "immediate" as separate parameters. */
+    /* aws_channel_shutdown() takes a single error_code, with no separate "immediate" flag, so we express urgency
+     * through the error code: a non-zero code is what makes the channel tear down without lingering. */
     int error_code = AWS_ERROR_SUCCESS;
     if (free_scarce_resources_immediately) {
         error_code = AWS_ERROR_HTTP_CONNECTION_CLOSED;
@@ -1527,7 +1534,9 @@ static void s_complete_incoming_frame(struct aws_websocket *websocket, int error
                 (void *)websocket);
             s_stop_reading_and_dont_block_shutdown(websocket);
 
-            /* TODO: auto-close if there's a channel-handler to the right */
+            /* Note: we deliberately do not shut the channel down here. The user decides how to respond to a CLOSE
+             * frame (see the CLOSE frame documentation in websocket.h), and when this websocket is acting as a
+             * midchannel handler, the handler to our right may still have work to finish. */
 
         } else if (websocket->thread_data.current_incoming_frame->opcode == AWS_WEBSOCKET_OPCODE_PING) {
             /* Automatically respond to a PING with a PONG */

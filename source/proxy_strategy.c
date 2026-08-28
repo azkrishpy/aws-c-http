@@ -712,7 +712,9 @@ static int s_kerberos_on_incoming_header_adaptive(
     (void)header_array;
     (void)num_headers;
 
-    /* TODO: process vanilla CONNECT response headers here to improve usage/application */
+    /* Nothing to do: kerberos authentication is carried entirely in the request's Proxy-Authorization header, and
+     * the outcome is determined by the CONNECT status code (see s_kerberos_on_connect_status). No response header is
+     * needed to drive the negotiation, so we accept and ignore them. */
 
     return AWS_OP_SUCCESS;
 }
@@ -723,8 +725,8 @@ static int s_kerberos_on_connect_status(
 
     struct aws_http_proxy_negotiator_tunneling_kerberos *kerberos_negotiator = proxy_negotiator->impl;
 
-    /* TODO: process status code of vanilla CONNECT request here to improve usage/application */
-
+    /* Any non-200 is treated as a failure. Kerberos offers a single token and has no second attempt to make, so
+     * there is nothing to be gained from distinguishing among the failure codes here. */
     if (kerberos_negotiator->connect_state == AWS_PNCS_IN_PROGRESS) {
         if (AWS_HTTP_STATUS_CODE_200_OK != status_code) {
             kerberos_negotiator->connect_state = AWS_PNCS_FAILURE;

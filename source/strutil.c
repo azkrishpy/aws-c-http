@@ -153,9 +153,10 @@ static const bool s_http_field_content_table[256] = {
 };
 
 /**
- * From RFC7230 section 3.2:
- * field-value    = *( field-content / obs-fold )
+ * From RFC9110 section 5.5:
+ * field-value    = *field-content
  * field-content  = field-vchar [ 1*( SP / HTAB ) field-vchar ]
+ * field-vchar    = VCHAR / obs-text
  *
  * But we're forbidding obs-fold
  */
@@ -205,8 +206,19 @@ bool aws_strutil_is_http_request_target(struct aws_byte_cursor cursor) {
         return false;
     }
 
-    /* TODO: Actually check the complete grammar as defined in RFC7230 5.3 and
-     * RFC3986. Currently this just checks whether the sequence is blatantly illegal */
+    /**
+     * This deliberately does not enforce the full request-target grammar (RFC7230 5.3 / RFC3986).
+     *
+     * A request-target is one of four forms (origin-form, absolute-form, authority-form, asterisk-form), and the
+     * characters permitted differ per form. Enforcing that grammar here would reject request-targets that are
+     * technically illegal but that servers accept in practice (unencoded characters such as '{', '|' or '"' in a
+     * query string being the common case), which would break callers that work today. The origin server is the
+     * authority on its own URI space, so we leave that judgment to it.
+     *
+     * What we do enforce is the part that is unambiguously a framing concern: no non-visible ASCII. Those
+     * characters (in particular CR, LF and SP) would terminate or split the request line and let a malformed path
+     * inject a second request.
+     */
     size_t i = 0;
     do {
         const uint8_t c = cursor.ptr[i++];

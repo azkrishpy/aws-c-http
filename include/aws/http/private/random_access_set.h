@@ -10,7 +10,8 @@
 #include <aws/common/hash_table.h>
 #include <aws/http/http.h>
 
-/* TODO: someday, if you want to use it from other repo, move it to aws-c-common. */
+/* Note: this is private to aws-c-http. If another repo needs it, it should move to aws-c-common rather than be
+ * duplicated or depended on from here. */
 
 struct aws_random_access_set_impl;
 

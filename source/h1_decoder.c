@@ -537,12 +537,21 @@ static int s_linestate_header(struct aws_h1_decoder *decoder, struct aws_byte_cu
                 }
             }
 
-            /* TODO: deal with body of indeterminate length, marking it as successful when connection is closed:
+            /**
+             * Known limitation: a body of indeterminate length is not supported.
              *
-             * A response that has neither chunked transfer coding nor Content-Length is terminated by closure of
-             * the connection and, thus, is considered complete regardless of the number of message body octets
-             * received, provided that the header section was received intact.
-             * RFC-7230 3.4 */
+             * RFC-7230 3.4: "A response that has neither chunked transfer coding nor Content-Length is terminated by
+             * closure of the connection and, thus, is considered complete regardless of the number of message body
+             * octets received, provided that the header section was received intact."
+             *
+             * We instead treat such a response as having an empty body and mark the message done at the end of the
+             * header section (see s_linestate_header). Supporting the RFC behavior means reading body until the
+             * connection closes and completing the stream successfully from the channel-shutdown path, which also
+             * forces the connection to be non-reusable. That is a change to the core read path, so it is deliberately
+             * left out of scope here rather than done as a side effect.
+             *
+             * In practice HTTP/1.1 servers delimit bodies with Content-Length or chunked encoding; this affects
+             * HTTP/1.0-style responses that do neither. */
         } break;
 
         default:
