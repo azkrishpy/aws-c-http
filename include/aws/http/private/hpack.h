@@ -208,15 +208,26 @@ size_t aws_hpack_get_dynamic_table_num_elements(const struct aws_hpack_context *
 
 size_t aws_hpack_get_dynamic_table_max_size(const struct aws_hpack_context *context);
 
+/**
+ * The largest dynamic table size this implementation supports, regardless of what the peer's
+ * SETTINGS_HEADER_TABLE_SIZE permits.
+ */
+AWS_HTTP_API
+size_t aws_hpack_get_max_supported_dynamic_table_size(void);
+
 AWS_HTTP_API
 const struct aws_http_header *aws_hpack_get_header(const struct aws_hpack_context *context, size_t index);
 
-/* A return value of 0 indicates that the header wasn't found */
+/**
+ * Find the table index of a header.
+ * Prefers an entry matching both name and value, falling back to a name-only match.
+ * `found_value` is set true if the returned index matches both the name and the value.
+ * A return value of 0 indicates that the header wasn't found.
+ */
 AWS_HTTP_API
 size_t aws_hpack_find_index(
     const struct aws_hpack_context *context,
     const struct aws_http_header *header,
-    bool search_value,
     bool *found_value);
 
 AWS_HTTP_API
