@@ -63,6 +63,8 @@ struct client_stream_tester_options {
     bool use_manual_data_writes;
     /* Optional: pointer to bool to track if on_h2_remote_end_stream fires */
     bool *on_h2_remote_end_stream;
+    /* Optional (ignored if 0): per-request override of the connection's response_first_byte_timeout_ms */
+    uint64_t response_first_byte_timeout_ms;
 };
 
 int client_stream_tester_init(
