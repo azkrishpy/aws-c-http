@@ -435,7 +435,6 @@ static struct aws_h2_connection *s_connection_new(
         http2_options->on_initial_settings_completed,
         NULL /* user_data is set later... */);
     if (!connection->thread_data.init_pending_settings) {
-        CONNECTION_LOGF(ERROR, connection, "Failed to create initial settings, %s", aws_error_name(aws_last_error()));
         goto error;
     }
     /* We enqueue the initial settings when handler get installed */
@@ -2901,18 +2900,15 @@ static void s_gather_statistics(struct aws_channel_handler *handler, struct aws_
     struct aws_h2_connection *connection = handler->impl;
     AWS_PRECONDITION(aws_channel_thread_is_callers_thread(connection->base.channel_slot->channel));
 
+    /* TODO: Need update the way we calculate statistics, to account for user-controlled pauses.
+     * If user is adding chunks 1 by 1, there can naturally be a gap in the upload.
+     * If the user lets the stream-window go to zero, there can naturally be a gap in the download. */
     uint64_t now_ns = 0;
     if (aws_channel_current_clock_time(connection->base.channel_slot->channel, &now_ns)) {
         return;
     }
 
     if (!aws_linked_list_empty(&connection->thread_data.outgoing_streams_list)) {
-        /**
-         * For stream flow control stall and writing to stream over time, the stream will be removed from the
-         * outgoing_streams_list.
-         * For connection level flow control, as there could be streams waiting for response, we cannot mark the
-         * connection is inactive.
-         */
         s_add_time_measurement_to_stats(
             connection->thread_data.outgoing_timestamp_ns,
             now_ns,
@@ -2920,7 +2916,6 @@ static void s_gather_statistics(struct aws_channel_handler *handler, struct aws_
 
         connection->thread_data.outgoing_timestamp_ns = now_ns;
     }
-
     if (aws_hash_table_get_entry_count(&connection->thread_data.active_streams_map) != 0) {
         s_add_time_measurement_to_stats(
             connection->thread_data.incoming_timestamp_ns,
@@ -2929,9 +2924,6 @@ static void s_gather_statistics(struct aws_channel_handler *handler, struct aws_
 
         connection->thread_data.incoming_timestamp_ns = now_ns;
     } else {
-        /**
-         * was inactive as no stream has data to write or waiting for data from the other side.
-         */
         connection->thread_data.stats.was_inactive = true;
     }
 

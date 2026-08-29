@@ -65,12 +65,9 @@ AWS_HTTP_API
 bool aws_strutil_is_http_reason_phrase(struct aws_byte_cursor cursor);
 
 /**
- * Return whether this ASCII/UTF-8 sequence is usable as an HTTP request-target.
+ * Return whether this ASCII/UTF-8 sequence is a valid HTTP request-target.
  *
- * Note: this checks that the sequence cannot break request framing (it must be non-empty and contain only visible
- * ASCII, so it can't inject CR, LF or SP into the request line). It intentionally does NOT enforce the full
- * request-target grammar of RFC7230 5.3 / RFC3986, because that would reject request-targets that servers accept in
- * practice. See aws_strutil_is_http_request_target() for the reasoning.
+ * Note: rejects non-visible ASCII only, not the full RFC7230 5.3 / RFC3986 grammar. See the implementation.
  */
 AWS_HTTP_API
 bool aws_strutil_is_http_request_target(struct aws_byte_cursor cursor);
