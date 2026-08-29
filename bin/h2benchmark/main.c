@@ -395,6 +395,17 @@ static void s_print_usage(FILE *out) {
         DEFAULT_RATE_THRESHOLD);
 }
 
+/* Parse a non-negative integer option value, exiting on anything invalid. */
+static int s_parse_non_negative_int(const char *name, const char *value) {
+    char *end = NULL;
+    long parsed = strtol(value, &end, 10);
+    if (end == value || *end != '\0' || parsed < 0 || parsed > INT_MAX) {
+        fprintf(stderr, "Invalid value for %s: '%s', expected a non-negative integer\n", name, value);
+        exit(1);
+    }
+    return (int)parsed;
+}
+
 /* Parse a positive integer option value, exiting on anything invalid. */
 static int s_parse_positive_int(const char *name, const char *value) {
     char *end = NULL;
@@ -440,7 +451,7 @@ static void s_parse_options(int argc, char **argv) {
                 break;
             }
             case 'l': {
-                int level = s_parse_positive_int("--log-level", aws_cli_optarg);
+                int level = s_parse_non_negative_int("--log-level", aws_cli_optarg);
                 if (level > AWS_LOG_LEVEL_TRACE) {
                     fprintf(stderr, "Invalid --log-level: %d, max is %d\n", level, AWS_LOG_LEVEL_TRACE);
                     exit(1);
