@@ -773,13 +773,10 @@ static void s_update_sm_connection_set_on_stream_finishes_synced(
     size_t ideal_num = stream_manager->ideal_concurrent_streams_per_connection;
     size_t max_num = sm_connection->max_concurrent_streams;
     /**
-     * Known limitation: max_num is captured from the peer's initial SETTINGS (see s_get_sm_connection_from_connection)
-     * and is not updated if the peer changes SETTINGS_MAX_CONCURRENT_STREAMS later. Reacting to a change would mean
-     * recomputing which availability set this connection belongs in and moving it, from the settings-change callback.
-     *
-     * The consequence is bounded: the HTTP/2 connection itself always enforces the peer's current limit, so a lowered
-     * limit costs us streams that fail and are retried rather than any incorrect accounting here, and a raised limit
-     * only means we under-use the connection.
+     * TODO: When the MAX_CONCURRENT_STREAMS from other side changed after the initial settings. We need to:
+     * - figure out where I am
+     * - figure out where I should be
+     * - if they're different, remove from where I am, put where should be
      */
     if (sm_connection->state == AWS_H2SMCST_NEARLY_FULL && cur_num < ideal_num) {
         /* this connection is back from soft limited to ideal */
