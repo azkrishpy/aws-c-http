@@ -299,6 +299,7 @@ add_test_case(hpack_dynamic_table_empty_value)
 add_test_case(hpack_dynamic_table_with_empty_header)
 add_test_case(hpack_dynamic_table_growth_corner_case)
 add_test_case(hpack_dynamic_table_size_update_from_setting)
+add_test_case(hpack_oversized_insert_empties_table)
 
 if(ENABLE_LOCALHOST_INTEGRATION_TESTS)
     # Tests should be named with localhost_integ_*

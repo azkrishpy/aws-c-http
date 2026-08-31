@@ -903,3 +903,33 @@ static int test_hpack_dynamic_table_size_update_from_setting(struct aws_allocato
     aws_http_library_clean_up();
     return AWS_OP_SUCCESS;
 }
+
+/**
+ * RFC-7541 4.4: "an attempt to add an entry larger than the maximum size causes the table to be
+ * emptied of all existing entries and results in an empty table."
+ */
+AWS_TEST_CASE(hpack_oversized_insert_empties_table, test_hpack_oversized_insert_empties_table)
+static int test_hpack_oversized_insert_empties_table(struct aws_allocator *allocator, void *ctx) {
+    (void)ctx;
+    aws_http_library_init(allocator);
+
+    struct aws_hpack_context context;
+    aws_hpack_context_init(&context, allocator, AWS_LS_HTTP_GENERAL, NULL);
+
+    DEFINE_STATIC_HEADER(small, "herp", "derp");
+    DEFINE_STATIC_HEADER(big, "a-header-name-that-is-long", "and-a-value-that-is-long-too");
+
+    /* Seat one entry, then shrink the table so the next one cannot possibly fit */
+    ASSERT_SUCCESS(aws_hpack_insert_header(&context, &small));
+    ASSERT_UINT_EQUALS(1, aws_hpack_get_dynamic_table_num_elements(&context));
+    ASSERT_SUCCESS(aws_hpack_resize_dynamic_table(&context, aws_hpack_get_header_size(&small)));
+    ASSERT_TRUE(aws_hpack_get_header_size(&big) > aws_hpack_get_header_size(&small));
+
+    /* Not an error: the table is emptied and the oversized entry is simply not added */
+    ASSERT_SUCCESS(aws_hpack_insert_header(&context, &big));
+    ASSERT_UINT_EQUALS(0, aws_hpack_get_dynamic_table_num_elements(&context));
+
+    aws_hpack_context_clean_up(&context);
+    aws_http_library_clean_up();
+    return AWS_OP_SUCCESS;
+}

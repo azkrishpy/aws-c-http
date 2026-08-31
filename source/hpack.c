@@ -403,8 +403,14 @@ int aws_hpack_insert_header(struct aws_hpack_context *context, const struct aws_
 
     /* If for whatever reason this new header is bigger than the total table size, burn everything to the ground. */
     if (AWS_UNLIKELY(header_size > context->dynamic_table.max_size)) {
-        /* #TODO handle this. It's not an error. It should simply result in an empty table RFC-7541 4.4 */
-        goto error;
+        /* RFC-7541 4.4: this is not an error. Adding an entry larger than the maximum size empties the table
+         * of all existing entries and results in an empty table. Erroring here instead would raise a
+         * COMPRESSION_ERROR, which is a connection error and would drop every concurrent stream. */
+        HPACK_LOG(TRACE, context, "Emptying dynamic table due to large header");
+        if (s_dynamic_table_shrink(context, 0)) {
+            goto error;
+        }
+        return AWS_OP_SUCCESS;
     }
 
     /* Rotate out headers until there's room for the new header (this function will return immediately if nothing needs
