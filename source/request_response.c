@@ -987,7 +987,12 @@ struct aws_http_message *aws_http2_message_new_from_http1(
          * gets through, e.g. for prior-knowledge HTTP/2 over cleartext). Otherwise there is nothing in an HTTP/1
          * message that identifies the scheme, so default to "https", which is what virtually all HTTP/2 traffic uses.
          */
+        /* An absolute-form target names the scheme; otherwise nothing in an HTTP/1 message identifies it,
+         * so default to https. This is how a cleartext prior-knowledge request keeps its scheme. */
         struct aws_byte_cursor scheme_cursor = AWS_BYTE_CUR_INIT_FROM_STRING_LITERAL("https");
+        if (target_is_absolute_form) {
+            scheme_cursor = *aws_uri_scheme(&absolute_form_target);
+        }
         if (aws_http_headers_add(copied_headers, aws_http_header_scheme, scheme_cursor)) {
             goto error;
         }
@@ -1005,8 +1010,17 @@ struct aws_http_message *aws_http2_message_new_from_http1(
          */
         struct aws_byte_cursor host_value;
         AWS_ZERO_STRUCT(host_value);
-        if (aws_http_headers_get(http1_msg->headers, aws_byte_cursor_from_c_str("host"), &host_value) ==
-            AWS_OP_SUCCESS) {
+        bool has_authority =
+            aws_http_headers_get(http1_msg->headers, aws_byte_cursor_from_c_str("host"), &host_value) == AWS_OP_SUCCESS;
+        if (!has_authority && target_is_absolute_form) {
+            /* No Host header, but an absolute-form target carries the authority too. */
+            const struct aws_byte_cursor *target_authority = aws_uri_authority(&absolute_form_target);
+            if (target_authority->len > 0) {
+                host_value = *target_authority;
+                has_authority = true;
+            }
+        }
+        if (has_authority) {
             if (aws_http_headers_add(copied_headers, aws_http_header_authority, host_value)) {
                 goto error;
             }

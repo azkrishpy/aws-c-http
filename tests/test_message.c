@@ -566,6 +566,20 @@ TEST_CASE(message_h2_from_http1_absolute_form_target) {
     ASSERT_TRUE(aws_byte_buf_eq_c_str(&value, "/index.html?q=1"));
     aws_byte_buf_clean_up(&value);
 
+    /* An "http" scheme must survive the transform rather than being forced to "https" */
+    ASSERT_SUCCESS(s_h2_pseudo_header_from_http1(
+        allocator, "GET", "http://example.com/index.html?q=1", NULL, 0, ":scheme", &value, &found));
+    ASSERT_TRUE(found);
+    ASSERT_TRUE(aws_byte_buf_eq_c_str(&value, "http"));
+    aws_byte_buf_clean_up(&value);
+
+    /* With no Host header, the authority comes from the target */
+    ASSERT_SUCCESS(s_h2_pseudo_header_from_http1(
+        allocator, "GET", "http://example.com/index.html?q=1", NULL, 0, ":authority", &value, &found));
+    ASSERT_TRUE(found);
+    ASSERT_TRUE(aws_byte_buf_eq_c_str(&value, "example.com"));
+    aws_byte_buf_clean_up(&value);
+
     /* An absolute URI with an empty path means the origin, "/" */
     ASSERT_SUCCESS(
         s_h2_pseudo_header_from_http1(allocator, "GET", "https://example.com", NULL, 0, ":path", &value, &found));
