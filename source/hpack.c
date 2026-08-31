@@ -4,21 +4,14 @@
  */
 #include <aws/http/private/hpack.h>
 
+/* #TODO test empty strings */
+
 /* RFC-7540 6.5.2 */
 const size_t s_hpack_dynamic_table_initial_size = 4096;
 const size_t s_hpack_dynamic_table_initial_elements = 512;
-/**
- * The largest dynamic table this implementation is willing to allocate.
- *
- * SETTINGS_HEADER_TABLE_SIZE is what drives the table size in practice, but it cannot be the only bound: the setting
- * is any uint32, and it is chosen by the peer. This is the ceiling we impose on top of it so that the peer cannot
- * make us allocate arbitrary amounts of memory.
- */
-const size_t s_hpack_dynamic_table_max_size = 16 * 1024 * 1024;
-
-size_t aws_hpack_get_max_supported_dynamic_table_size(void) {
-    return s_hpack_dynamic_table_max_size;
-}
+/* SETTINGS_HEADER_TABLE_SIZE drives the table size, but it is chosen by the peer, so this is the
+ * ceiling we impose on top of it. */
+const size_t s_hpack_dynamic_table_max_size = AWS_HPACK_MAX_DYNAMIC_TABLE_SIZE;
 
 struct aws_http_header s_static_header_table[] = {
 #define HEADER(_index, _name)                                                                                          \
@@ -211,29 +204,35 @@ const struct aws_http_header *aws_hpack_get_header(const struct aws_hpack_contex
     return s_dynamic_table_get(context, index - s_static_header_table_size);
 }
 
+/* TODO: remove `bool search_value`, this option has no reason to exist */
 size_t aws_hpack_find_index(
     const struct aws_hpack_context *context,
     const struct aws_http_header *header,
+    bool search_value,
     bool *found_value) {
 
     *found_value = false;
 
     struct aws_hash_element *elem = NULL;
-    /* Check name-and-value first in static table */
-    aws_hash_table_find(&s_static_header_reverse_lookup, header, &elem);
-    if (elem) {
-        /* A hit in the reverse-lookup table means the name AND value both matched, so the value is usable as-is.
-         * That holds even when the matched value is empty. */
-        *found_value = true;
-        return (size_t)elem->value;
+    if (search_value) {
+        /* Check name-and-value first in static table */
+        aws_hash_table_find(&s_static_header_reverse_lookup, header, &elem);
+        if (elem) {
+            /* TODO: Maybe always set found_value to true? Who cares that the value is empty if they matched? */
+            /* If an element was found, check if it has a value */
+            *found_value = ((const struct aws_http_header *)elem->key)->value.len;
+            return (size_t)elem->value;
+        }
+        /* Check name-and-value in dynamic table */
+        aws_hash_table_find(&context->dynamic_table.reverse_lookup, header, &elem);
+        if (elem) {
+            /* TODO: Maybe always set found_value to true? Who cares that the value is empty if they matched? */
+            *found_value = ((const struct aws_http_header *)elem->key)->value.len;
+            goto trans_index_from_dynamic_table;
+        }
     }
-    /* Check name-and-value in dynamic table */
-    aws_hash_table_find(&context->dynamic_table.reverse_lookup, header, &elem);
-    if (elem) {
-        *found_value = true;
-        goto trans_index_from_dynamic_table;
-    }
-    /* We failed to match name-and-value, so fall back to matching the name only */
+    /* Check the name-only table. Note, even if we search for value, when we fail in searching for name-and-value, we
+     * should also check the name only table */
     aws_hash_table_find(&s_static_header_reverse_lookup_name_only, &header->name, &elem);
     if (elem) {
         return (size_t)elem->value;
@@ -400,13 +399,8 @@ int aws_hpack_insert_header(struct aws_hpack_context *context, const struct aws_
 
     /* If for whatever reason this new header is bigger than the total table size, burn everything to the ground. */
     if (AWS_UNLIKELY(header_size > context->dynamic_table.max_size)) {
-        /* RFC-7541 4.4 an attempt to add an entry larger than the maximum size causes the table to be emptied of all
-         * existing entries and results in an empty table */
-        HPACK_LOG(TRACE, context, "Emptying dynamic table due to large header");
-        if (s_dynamic_table_shrink(context, 0)) {
-            goto error;
-        }
-        return AWS_OP_SUCCESS;
+        /* #TODO handle this. It's not an error. It should simply result in an empty table RFC-7541 4.4 */
+        goto error;
     }
 
     /* Rotate out headers until there's room for the new header (this function will return immediately if nothing needs
@@ -444,6 +438,7 @@ int aws_hpack_insert_header(struct aws_hpack_context *context, const struct aws_
     /* Put the header at the "front" of the table */
     struct aws_http_header *table_header = s_dynamic_table_get(context, 0);
 
+    /* TODO:: We can optimize this with ring buffer. */
     /* allocate memory for the name and value, which will be deallocated whenever the entry is evicted from the table or
      * the table is cleaned up. We keep the pointer in the name pointer of each entry */
     const size_t buf_memory_size = header->name.len + header->value.len;
