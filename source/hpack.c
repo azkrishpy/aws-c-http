@@ -6,8 +6,6 @@
 
 /* #TODO test empty strings */
 
-/* #TODO remove all OOM error handling in HTTP/2 & HPACK. make functions void if possible */
-
 /* RFC-7540 6.5.2 */
 const size_t s_hpack_dynamic_table_initial_size = 4096;
 const size_t s_hpack_dynamic_table_initial_elements = 512;
