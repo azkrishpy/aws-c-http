@@ -10,6 +10,11 @@
 #include <aws/common/hash_table.h>
 #include <aws/compression/huffman.h>
 
+/* The largest dynamic table this implementation will allocate, whatever the peer's
+ * SETTINGS_HEADER_TABLE_SIZE says. A macro so both hpack.c and hpack_encoder.c can use it
+ * without exporting a new symbol. */
+#define AWS_HPACK_MAX_DYNAMIC_TABLE_SIZE (16 * 1024 * 1024)
+
 /**
  * Result of aws_hpack_decode() call.
  * If a complete entry has not been decoded yet, type is ONGOING.
@@ -106,19 +111,9 @@ struct aws_hpack_decoder {
 
     struct aws_hpack_context context;
 
-    /* SETTINGS_HEADER_TABLE_SIZE from http2. */
-    struct {
-        size_t latest_value;             /* The latest setting from http2  */
-        uint32_t smallest_value_pending; /* The smallest setting during the pending update time. Only valid when
-                                            pending_update is true. */
-        bool pending_update_in_progress; /* True when the settings was received that smaller than the current dynamic
-                                    table size but not received a regular entry yet, assume the update is still in
-                                    progress. */
-        bool update_valid; /* True when the update should happen and no *conformant* Dynamic table resize was received
-                                yet, which is at least one resize smaller than the smallest value received during the
-                                time. */
-        size_t received_resize_num; /* The continuous number of dynamic table resize received during pending. */
-    } dynamic_table_protocol_max_size_setting;
+    /* TODO: check the new (RFC 9113 - 4.3.1) to make sure we did it right */
+    /* SETTINGS_HEADER_TABLE_SIZE from http2 */
+    size_t dynamic_table_protocol_max_size_setting;
 
     /* Maximum decoded header-list size (from SETTINGS_MAX_HEADER_LIST_SIZE).
      * Individual HPACK string lengths are checked against this to prevent unbounded growth. */
@@ -208,26 +203,15 @@ size_t aws_hpack_get_dynamic_table_num_elements(const struct aws_hpack_context *
 
 size_t aws_hpack_get_dynamic_table_max_size(const struct aws_hpack_context *context);
 
-/**
- * The largest dynamic table size this implementation supports, regardless of what the peer's
- * SETTINGS_HEADER_TABLE_SIZE permits.
- */
-AWS_HTTP_API
-size_t aws_hpack_get_max_supported_dynamic_table_size(void);
-
 AWS_HTTP_API
 const struct aws_http_header *aws_hpack_get_header(const struct aws_hpack_context *context, size_t index);
 
-/**
- * Find the table index of a header.
- * Prefers an entry matching both name and value, falling back to a name-only match.
- * `found_value` is set true if the returned index matches both the name and the value.
- * A return value of 0 indicates that the header wasn't found.
- */
+/* A return value of 0 indicates that the header wasn't found */
 AWS_HTTP_API
 size_t aws_hpack_find_index(
     const struct aws_hpack_context *context,
     const struct aws_http_header *header,
+    bool search_value,
     bool *found_value);
 
 AWS_HTTP_API

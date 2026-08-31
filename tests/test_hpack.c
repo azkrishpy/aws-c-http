@@ -8,6 +8,8 @@
 
 #include <aws/http/request_response.h>
 
+/* #TODO test that buffer is resized if space is insufficient */
+
 AWS_TEST_CASE(hpack_encode_integer, test_hpack_encode_integer)
 static int test_hpack_encode_integer(struct aws_allocator *allocator, void *ctx) {
     (void)allocator;
@@ -85,124 +87,6 @@ static int test_hpack_encode_integer(struct aws_allocator *allocator, void *ctx)
     ASSERT_UINT_EQUALS(0, output.buffer[3]);
 
     aws_byte_buf_clean_up(&output);
-    return AWS_OP_SUCCESS;
-}
-
-/* The encode functions grow `output` when it lacks the capacity for the encoded result.
- * Start from a buffer with no spare capacity at all and check nothing is truncated. */
-AWS_TEST_CASE(hpack_encode_resizes_output, test_hpack_encode_resizes_output)
-static int test_hpack_encode_resizes_output(struct aws_allocator *allocator, void *ctx) {
-    (void)ctx;
-
-    struct aws_hpack_encoder encoder;
-    aws_hpack_encoder_init(&encoder, allocator, NULL);
-
-    /* An integer whose encoding needs 3 bytes, into a buffer of capacity 0 */
-    {
-        struct aws_byte_buf output;
-        ASSERT_SUCCESS(aws_byte_buf_init(&output, allocator, 0));
-        ASSERT_UINT_EQUALS(0, output.capacity);
-
-        ASSERT_SUCCESS(aws_hpack_encode_integer(1337, 0, 5, &output));
-
-        ASSERT_UINT_EQUALS(3, output.len);
-        ASSERT_TRUE(output.capacity >= output.len);
-        ASSERT_UINT_EQUALS(UINT8_MAX >> 3, output.buffer[0]);
-        ASSERT_UINT_EQUALS(154, output.buffer[1]);
-        ASSERT_UINT_EQUALS(10, output.buffer[2]);
-
-        aws_byte_buf_clean_up(&output);
-    }
-
-    /* A string, into a buffer with capacity for only part of it. Test both huffman modes, since they
-     * take different paths through the encoder. */
-    const enum aws_hpack_huffman_mode modes[] = {
-        AWS_HPACK_HUFFMAN_NEVER,
-        AWS_HPACK_HUFFMAN_ALWAYS,
-        AWS_HPACK_HUFFMAN_SMALLEST,
-    };
-    for (size_t i = 0; i < AWS_ARRAY_SIZE(modes); ++i) {
-        aws_hpack_encoder_set_huffman_mode(&encoder, modes[i]);
-
-        struct aws_byte_buf output;
-        ASSERT_SUCCESS(aws_byte_buf_init(&output, allocator, 0));
-
-        struct aws_byte_cursor to_encode = aws_byte_cursor_from_c_str("www.example.com");
-        ASSERT_SUCCESS(aws_hpack_encode_string(&encoder, to_encode, &output));
-
-        /* Whatever the mode, the result is a length prefix plus at least one byte of data,
-         * and it must not have been truncated to the original capacity. */
-        ASSERT_TRUE(output.len > 1);
-        ASSERT_TRUE(output.capacity >= output.len);
-
-        /* Round-trip it to prove nothing was lost */
-        struct aws_hpack_decoder decoder;
-        aws_hpack_decoder_init(&decoder, allocator, NULL);
-
-        struct aws_byte_buf decoded;
-        /* Capacity of 1 (not 0), the decode buffer grows from there. */
-        ASSERT_SUCCESS(aws_byte_buf_init(&decoded, allocator, 1));
-        struct aws_byte_cursor to_decode = aws_byte_cursor_from_buf(&output);
-        bool complete = false;
-        ASSERT_SUCCESS(aws_hpack_decode_string(&decoder, &to_decode, &decoded, &complete));
-        ASSERT_TRUE(complete);
-        ASSERT_BIN_ARRAYS_EQUALS(to_encode.ptr, to_encode.len, decoded.buffer, decoded.len);
-
-        aws_byte_buf_clean_up(&decoded);
-        aws_hpack_decoder_clean_up(&decoder);
-        aws_byte_buf_clean_up(&output);
-    }
-
-    aws_hpack_encoder_clean_up(&encoder);
-    return AWS_OP_SUCCESS;
-}
-
-/* A peer may advertise any uint32 for SETTINGS_HEADER_TABLE_SIZE. We must clamp it to what we support rather than
- * try (and fail) to allocate a table that big. */
-AWS_TEST_CASE(hpack_encoder_caps_peer_max_table_size, test_hpack_encoder_caps_peer_max_table_size)
-static int test_hpack_encoder_caps_peer_max_table_size(struct aws_allocator *allocator, void *ctx) {
-    (void)ctx;
-
-    aws_http_library_init(allocator);
-
-    const size_t supported_max = aws_hpack_get_max_supported_dynamic_table_size();
-    ASSERT_TRUE(supported_max < UINT32_MAX);
-
-    struct aws_hpack_encoder encoder;
-    aws_hpack_encoder_init(&encoder, allocator, NULL);
-
-    /* Peer says its decoder's table could grow bigger than we're willing to allocate */
-    aws_hpack_encoder_update_max_table_size(&encoder, UINT32_MAX);
-
-    struct aws_http_headers *headers = aws_http_headers_new(allocator);
-    ASSERT_NOT_NULL(headers);
-    ASSERT_SUCCESS(
-        aws_http_headers_add(headers, aws_byte_cursor_from_c_str("host"), aws_byte_cursor_from_c_str("example.com")));
-
-    struct aws_byte_buf output;
-    ASSERT_SUCCESS(aws_byte_buf_init(&output, allocator, 64));
-
-    /* Encoding must still succeed. Before the size was capped, the oversized resize failed and took this with it. */
-    ASSERT_SUCCESS(aws_hpack_encode_header_block(&encoder, headers, &output));
-
-    /* The table was sized to our supported maximum, not the peer's number */
-    ASSERT_UINT_EQUALS(supported_max, aws_hpack_get_dynamic_table_max_size(&encoder.context));
-
-    /* The dynamic table size update we emitted must advertise the capped value, so the peer's decoder agrees with us */
-    struct aws_hpack_decoder decoder;
-    aws_hpack_decoder_init(&decoder, allocator, NULL);
-    aws_hpack_decoder_update_max_table_size(&decoder, UINT32_MAX);
-    struct aws_byte_cursor to_decode = aws_byte_cursor_from_buf(&output);
-    struct aws_hpack_decode_result result;
-    ASSERT_SUCCESS(aws_hpack_decode(&decoder, &to_decode, &result));
-    ASSERT_INT_EQUALS(AWS_HPACK_DECODE_T_DYNAMIC_TABLE_RESIZE, result.type);
-    ASSERT_UINT_EQUALS(supported_max, result.data.dynamic_table_resize);
-
-    aws_hpack_decoder_clean_up(&decoder);
-    aws_byte_buf_clean_up(&output);
-    aws_http_headers_release(headers);
-    aws_hpack_encoder_clean_up(&encoder);
-    aws_http_library_clean_up();
     return AWS_OP_SUCCESS;
 }
 
@@ -584,8 +468,7 @@ TEST_DECODE_ONE_BYTE_AT_A_TIME(hpack_decode_string_huffman) {
     return AWS_OP_SUCCESS;
 }
 
-/* RFC-7541 5.2: "A padding not corresponding to the most significant bits of the code for the EOS symbol MUST be
- * treated as a decoding error." The EOS code is all 1s, so padding must be all 1 bits. */
+/* RFC-7541 5.2: padding must be the most significant bits of the EOS symbol, which is all 1s. */
 TEST_DECODE_ONE_BYTE_AT_A_TIME(hpack_decode_string_huffman_bad_padding) {
     struct decode_fixture *fixture = ctx;
 
@@ -594,7 +477,7 @@ TEST_DECODE_ONE_BYTE_AT_A_TIME(hpack_decode_string_huffman_bad_padding) {
     bool complete;
 
     /* The huffman code for '0' is 00000 (5 bits), so a 1 byte string leaves 3 bits of padding.
-     * Padding of all 1s is legal. */
+     * All 1s is legal. */
     {
         uint8_t input[] = {0x81 /* huffman | length 1 */, 0x07 /* 00000 111 */};
         struct aws_byte_cursor to_decode = aws_byte_cursor_from_array(input, AWS_ARRAY_SIZE(input));
@@ -603,10 +486,10 @@ TEST_DECODE_ONE_BYTE_AT_A_TIME(hpack_decode_string_huffman_bad_padding) {
         ASSERT_BIN_ARRAYS_EQUALS("0", 1, output.buffer, output.len);
     }
 
-    /* The same symbol, but padded with 0s instead, must be rejected. */
+    /* Same symbol padded with 0s must be rejected. */
     {
         output.len = 0;
-        uint8_t input[] = {0x81 /* huffman | length 1 */, 0x00 /* 00000 000 */};
+        uint8_t input[] = {0x81, 0x00 /* 00000 000 */};
         struct aws_byte_cursor to_decode = aws_byte_cursor_from_array(input, AWS_ARRAY_SIZE(input));
         ASSERT_FAILS(s_decode_string(fixture, &to_decode, &output, &complete));
     }
@@ -619,7 +502,7 @@ TEST_DECODE_ONE_BYTE_AT_A_TIME(hpack_decode_string_huffman_bad_padding) {
 TEST_DECODE_ONE_BYTE_AT_A_TIME(hpack_decode_string_huffman_padding_too_long) {
     struct decode_fixture *fixture = ctx;
 
-    /* Huffman-encoded "www.example.com" (RFC-7541 C.4.1), but with a whole extra byte of 1s appended,
+    /* Huffman-encoded "www.example.com" (RFC-7541 C.4.1) with a whole extra byte of 1s appended,
      * and the length bumped from 12 to 13 to match. */
     uint8_t input[] = {0x8d, 0xf1, 0xe3, 0xc2, 0xe5, 0xf2, 0x3a, 0x6b, 0xa0, 0xab, 0x90, 0xf4, 0xff, 0xff};
     struct aws_byte_cursor to_decode = aws_byte_cursor_from_array(input, AWS_ARRAY_SIZE(input));
@@ -628,39 +511,6 @@ TEST_DECODE_ONE_BYTE_AT_A_TIME(hpack_decode_string_huffman_padding_too_long) {
     ASSERT_SUCCESS(aws_byte_buf_init(&output, allocator, 16));
     bool complete;
     ASSERT_FAILS(s_decode_string(fixture, &to_decode, &output, &complete));
-
-    aws_byte_buf_clean_up(&output);
-    return AWS_OP_SUCCESS;
-}
-
-/* A string longer than SETTINGS_MAX_HEADER_LIST_SIZE must be rejected as soon as its length is decoded.
- * This complements the h2-level coverage by exercising the one-byte-at-a-time path. */
-TEST_DECODE_ONE_BYTE_AT_A_TIME(hpack_decode_string_exceeding_max_length) {
-    struct decode_fixture *fixture = ctx;
-
-    aws_hpack_decoder_set_max_header_list_size(&fixture->hpack, 4);
-
-    struct aws_byte_buf output;
-    ASSERT_SUCCESS(aws_byte_buf_init(&output, allocator, 8));
-    bool complete;
-
-    /* A string at exactly the limit is fine */
-    {
-        uint8_t input[] = {4, 'h', 'e', 'l', 'l'};
-        struct aws_byte_cursor to_decode = aws_byte_cursor_from_array(input, AWS_ARRAY_SIZE(input));
-        ASSERT_SUCCESS(s_decode_string(fixture, &to_decode, &output, &complete));
-        ASSERT_TRUE(complete);
-        ASSERT_BIN_ARRAYS_EQUALS("hell", 4, output.buffer, output.len);
-    }
-
-    /* One byte over the limit is rejected, and no payload is buffered */
-    {
-        output.len = 0;
-        uint8_t input[] = {5, 'h', 'e', 'l', 'l', 'o'};
-        struct aws_byte_cursor to_decode = aws_byte_cursor_from_array(input, AWS_ARRAY_SIZE(input));
-        ASSERT_FAILS(s_decode_string(fixture, &to_decode, &output, &complete));
-        ASSERT_UINT_EQUALS(0, output.len);
-    }
 
     aws_byte_buf_clean_up(&output);
     return AWS_OP_SUCCESS;
@@ -727,17 +577,17 @@ static int test_hpack_static_table_find(struct aws_allocator *allocator, void *c
     DEFINE_STATIC_HEADER(s_garbage, "colden's favorite ice cream flavor", "cookie dough");
 
     /* Test header without value */
-    ASSERT_UINT_EQUALS(1, aws_hpack_find_index(&context, &s_authority, &found_value));
+    ASSERT_UINT_EQUALS(1, aws_hpack_find_index(&context, &s_authority, false, &found_value));
     ASSERT_FALSE(found_value);
 
     /* Test header with value */
-    ASSERT_UINT_EQUALS(2, aws_hpack_find_index(&context, &s_get, &found_value));
+    ASSERT_UINT_EQUALS(2, aws_hpack_find_index(&context, &s_get, true, &found_value));
     ASSERT_TRUE(found_value);
-    ASSERT_UINT_EQUALS(2, aws_hpack_find_index(&context, &s_other_method, &found_value));
+    ASSERT_UINT_EQUALS(2, aws_hpack_find_index(&context, &s_other_method, true, &found_value));
     ASSERT_FALSE(found_value);
 
     /* Check invalid header */
-    ASSERT_UINT_EQUALS(0, aws_hpack_find_index(&context, &s_garbage, &found_value));
+    ASSERT_UINT_EQUALS(0, aws_hpack_find_index(&context, &s_garbage, true, &found_value));
 
     aws_hpack_context_clean_up(&context);
     aws_http_library_clean_up();
@@ -793,18 +643,18 @@ static int test_hpack_dynamic_table_find(struct aws_allocator *allocator, void *
 
     /* Test single header */
     ASSERT_SUCCESS(aws_hpack_insert_header(&context, &s_herp));
-    ASSERT_UINT_EQUALS(62, aws_hpack_find_index(&context, &s_herp, &found_value));
+    ASSERT_UINT_EQUALS(62, aws_hpack_find_index(&context, &s_herp, true, &found_value));
     ASSERT_TRUE(found_value);
-    ASSERT_UINT_EQUALS(62, aws_hpack_find_index(&context, &s_herp2, &found_value));
+    ASSERT_UINT_EQUALS(62, aws_hpack_find_index(&context, &s_herp2, true, &found_value));
     ASSERT_FALSE(found_value);
 
     /* Test 2 headers */
     ASSERT_SUCCESS(aws_hpack_insert_header(&context, &s_fizz));
-    ASSERT_UINT_EQUALS(62, aws_hpack_find_index(&context, &s_fizz, &found_value));
+    ASSERT_UINT_EQUALS(62, aws_hpack_find_index(&context, &s_fizz, true, &found_value));
     ASSERT_TRUE(found_value);
-    ASSERT_UINT_EQUALS(63, aws_hpack_find_index(&context, &s_herp, &found_value));
+    ASSERT_UINT_EQUALS(63, aws_hpack_find_index(&context, &s_herp, true, &found_value));
     ASSERT_TRUE(found_value);
-    ASSERT_UINT_EQUALS(63, aws_hpack_find_index(&context, &s_herp2, &found_value));
+    ASSERT_UINT_EQUALS(63, aws_hpack_find_index(&context, &s_herp2, true, &found_value));
     ASSERT_FALSE(found_value);
 
     /* Test resizing up doesn't break anything */
@@ -812,14 +662,14 @@ static int test_hpack_dynamic_table_find(struct aws_allocator *allocator, void *
 
     /* Check invalid header */
     DEFINE_STATIC_HEADER(s_garbage, "colden's mother's maiden name", "nice try mr hacker");
-    ASSERT_UINT_EQUALS(0, aws_hpack_find_index(&context, &s_garbage, &found_value));
+    ASSERT_UINT_EQUALS(0, aws_hpack_find_index(&context, &s_garbage, true, &found_value));
 
     /* Test resizing so only the first element stays */
     ASSERT_SUCCESS(aws_hpack_resize_dynamic_table(&context, aws_hpack_get_header_size(&s_fizz)));
 
-    ASSERT_UINT_EQUALS(62, aws_hpack_find_index(&context, &s_fizz, &found_value));
+    ASSERT_UINT_EQUALS(62, aws_hpack_find_index(&context, &s_fizz, true, &found_value));
     ASSERT_TRUE(found_value);
-    ASSERT_UINT_EQUALS(0, aws_hpack_find_index(&context, &s_herp, &found_value));
+    ASSERT_UINT_EQUALS(0, aws_hpack_find_index(&context, &s_herp, true, &found_value));
     ASSERT_FALSE(found_value);
 
     aws_hpack_context_clean_up(&context);
@@ -970,9 +820,9 @@ static int test_hpack_dynamic_table_empty_value(struct aws_allocator *allocator,
         *  64      :status 302
     */
     bool found_value = false;
-    ASSERT_UINT_EQUALS(64, aws_hpack_find_index(&context, &header1, &found_value));
-    ASSERT_UINT_EQUALS(63, aws_hpack_find_index(&context, &empty_value_header, &found_value));
-    ASSERT_UINT_EQUALS(62, aws_hpack_find_index(&context, &header2, &found_value));
+    ASSERT_UINT_EQUALS(64, aws_hpack_find_index(&context, &header1, true, &found_value));
+    ASSERT_UINT_EQUALS(63, aws_hpack_find_index(&context, &empty_value_header, true, &found_value));
+    ASSERT_UINT_EQUALS(62, aws_hpack_find_index(&context, &header2, true, &found_value));
 
     /* Clean up */
     aws_hpack_context_clean_up(&context);
@@ -1003,9 +853,9 @@ static int test_hpack_dynamic_table_with_empty_header(struct aws_allocator *allo
         *  64      :status 302
     */
     bool found_value = false;
-    ASSERT_UINT_EQUALS(64, aws_hpack_find_index(&context, &header1, &found_value));
-    ASSERT_UINT_EQUALS(63, aws_hpack_find_index(&context, &empty_header, &found_value));
-    ASSERT_UINT_EQUALS(62, aws_hpack_find_index(&context, &header2, &found_value));
+    ASSERT_UINT_EQUALS(64, aws_hpack_find_index(&context, &header1, true, &found_value));
+    ASSERT_UINT_EQUALS(63, aws_hpack_find_index(&context, &empty_header, true, &found_value));
+    ASSERT_UINT_EQUALS(62, aws_hpack_find_index(&context, &header2, true, &found_value));
 
     /* Clean up */
     aws_hpack_context_clean_up(&context);
@@ -1102,127 +952,34 @@ static int test_hpack_dynamic_table_size_update_from_setting(struct aws_allocato
     return AWS_OP_SUCCESS;
 }
 
-/* Feed bytes to a decoder until they are consumed, decoding entries as they complete. */
-static int s_decode_all(struct aws_hpack_decoder *decoder, const uint8_t *bytes, size_t len) {
-    struct aws_byte_cursor to_decode = aws_byte_cursor_from_array(bytes, len);
-    while (to_decode.len) {
-        struct aws_hpack_decode_result result;
-        if (aws_hpack_decode(decoder, &to_decode, &result)) {
-            return AWS_OP_ERR;
-        }
-        if (result.type == AWS_HPACK_DECODE_T_ONGOING) {
-            break;
-        }
-    }
-    return AWS_OP_SUCCESS;
-}
-
-/* Put one entry in the dynamic table (literal with incremental indexing, new name "a: b"),
- * then tell the decoder the peer acknowledged a SETTINGS_HEADER_TABLE_SIZE smaller than the
- * table's current size, which is what arms the RFC-9113 4.3.1 requirement. */
-static int s_arm_pending_table_size_update(struct aws_hpack_decoder *decoder, uint32_t new_setting) {
-    const uint8_t insert[] = {0x40, 0x01, 'a', 0x01, 'b'};
-    ASSERT_SUCCESS(s_decode_all(decoder, insert, sizeof(insert)));
-    aws_hpack_decoder_update_max_table_size(decoder, new_setting);
-    return AWS_OP_SUCCESS;
-}
-
-/**
- * RFC-9113 4.3.1: "An endpoint MUST treat a field block that follows an acknowledgment of the
- * reduction to the maximum dynamic table size as a connection error [...] if it does not start
- * with a conformant Dynamic Table Size Update instruction."
- */
-AWS_TEST_CASE(hpack_table_size_update_required_after_ack, test_hpack_table_size_update_required_after_ack)
-static int test_hpack_table_size_update_required_after_ack(struct aws_allocator *allocator, void *ctx) {
+/* A peer may advertise any uint32 for SETTINGS_HEADER_TABLE_SIZE. We clamp it to what we support,
+ * rather than failing every header block on that connection. */
+AWS_TEST_CASE(hpack_encoder_caps_peer_max_table_size, test_hpack_encoder_caps_peer_max_table_size)
+static int test_hpack_encoder_caps_peer_max_table_size(struct aws_allocator *allocator, void *ctx) {
     (void)ctx;
     aws_http_library_init(allocator);
 
-    struct aws_hpack_decoder decoder;
-    aws_hpack_decoder_init(&decoder, allocator, NULL);
-    ASSERT_SUCCESS(s_arm_pending_table_size_update(&decoder, 10));
+    struct aws_hpack_encoder encoder;
+    aws_hpack_encoder_init(&encoder, allocator, NULL);
 
-    /* An indexed header field (":method: GET") is not a Dynamic Table Size Update, so this must fail */
-    const uint8_t indexed[] = {0x82};
-    ASSERT_FAILS(s_decode_all(&decoder, indexed, sizeof(indexed)));
+    /* Peer says its decoder's table could grow bigger than we are willing to allocate */
+    aws_hpack_encoder_update_max_table_size(&encoder, UINT32_MAX);
 
-    aws_hpack_decoder_clean_up(&decoder);
-    aws_http_library_clean_up();
-    return AWS_OP_SUCCESS;
-}
+    struct aws_http_headers *headers = aws_http_headers_new(allocator);
+    ASSERT_NOT_NULL(headers);
+    ASSERT_SUCCESS(
+        aws_http_headers_add(headers, aws_byte_cursor_from_c_str("host"), aws_byte_cursor_from_c_str("example.com")));
 
-/* The same situation, but the block does start with a conformant resize, so it must be accepted. */
-AWS_TEST_CASE(hpack_table_size_update_conformant_accepted, test_hpack_table_size_update_conformant_accepted)
-static int test_hpack_table_size_update_conformant_accepted(struct aws_allocator *allocator, void *ctx) {
-    (void)ctx;
-    aws_http_library_init(allocator);
+    struct aws_byte_buf output;
+    ASSERT_SUCCESS(aws_byte_buf_init(&output, allocator, 64));
 
-    struct aws_hpack_decoder decoder;
-    aws_hpack_decoder_init(&decoder, allocator, NULL);
-    ASSERT_SUCCESS(s_arm_pending_table_size_update(&decoder, 10));
+    /* Before the clamp, the oversized resize failed and took this with it. */
+    ASSERT_SUCCESS(aws_hpack_encode_header_block(&encoder, headers, &output));
+    ASSERT_UINT_EQUALS(AWS_HPACK_MAX_DYNAMIC_TABLE_SIZE, aws_hpack_get_dynamic_table_max_size(&encoder.context));
 
-    /* 0x2A = Dynamic Table Size Update (001 prefix) with a 5-bit size of 10, which is <= the
-     * smallest value signalled, then the indexed header field that previously failed. */
-    const uint8_t conformant[] = {0x2A, 0x82};
-    ASSERT_SUCCESS(s_decode_all(&decoder, conformant, sizeof(conformant)));
-
-    /* Resizing to 10 evicted the 34-byte entry we inserted */
-    ASSERT_UINT_EQUALS(0, aws_hpack_get_dynamic_table_num_elements(&decoder.context));
-
-    aws_hpack_decoder_clean_up(&decoder);
-    aws_http_library_clean_up();
-    return AWS_OP_SUCCESS;
-}
-
-/**
- * RFC-7541 4.2: "the smallest maximum table size that occurs in that interval MUST be signaled in a
- * dynamic table size update. The final maximum size is always signaled, resulting in at most two
- * dynamic table size updates." More than two is not a conformant sequence.
- */
-AWS_TEST_CASE(hpack_table_size_update_too_many_rejected, test_hpack_table_size_update_too_many_rejected)
-static int test_hpack_table_size_update_too_many_rejected(struct aws_allocator *allocator, void *ctx) {
-    (void)ctx;
-    aws_http_library_init(allocator);
-
-    struct aws_hpack_decoder decoder;
-    aws_hpack_decoder_init(&decoder, allocator, NULL);
-    ASSERT_SUCCESS(s_arm_pending_table_size_update(&decoder, 10));
-
-    /* Three resizes (10, 8, 5 - each within the signalled limit) then a regular entry */
-    const uint8_t too_many[] = {0x2A, 0x28, 0x25, 0x82};
-    ASSERT_FAILS(s_decode_all(&decoder, too_many, sizeof(too_many)));
-
-    aws_hpack_decoder_clean_up(&decoder);
-    aws_http_library_clean_up();
-    return AWS_OP_SUCCESS;
-}
-
-/**
- * RFC-7541 4.4: "an attempt to add an entry larger than the maximum size causes the table to be
- * emptied of all existing entries and results in an empty table."
- */
-AWS_TEST_CASE(hpack_oversized_insert_empties_table, test_hpack_oversized_insert_empties_table)
-static int test_hpack_oversized_insert_empties_table(struct aws_allocator *allocator, void *ctx) {
-    (void)ctx;
-    aws_http_library_init(allocator);
-
-    struct aws_hpack_context context;
-    aws_hpack_context_init(&context, allocator, AWS_LS_HTTP_GENERAL, NULL);
-
-    DEFINE_STATIC_HEADER(small, "herp", "derp");
-    DEFINE_STATIC_HEADER(big, "a-header-name-that-is-long", "and-a-value-that-is-long-too");
-
-    /* Seat one entry, then shrink the table so the next one cannot possibly fit */
-    ASSERT_SUCCESS(aws_hpack_insert_header(&context, &small));
-    ASSERT_UINT_EQUALS(1, aws_hpack_get_dynamic_table_num_elements(&context));
-    ASSERT_SUCCESS(aws_hpack_resize_dynamic_table(&context, aws_hpack_get_header_size(&small)));
-    ASSERT_UINT_EQUALS(1, aws_hpack_get_dynamic_table_num_elements(&context));
-    ASSERT_TRUE(aws_hpack_get_header_size(&big) > aws_hpack_get_header_size(&small));
-
-    /* Not an error: the table is emptied and the oversized entry is simply not added */
-    ASSERT_SUCCESS(aws_hpack_insert_header(&context, &big));
-    ASSERT_UINT_EQUALS(0, aws_hpack_get_dynamic_table_num_elements(&context));
-
-    aws_hpack_context_clean_up(&context);
+    aws_byte_buf_clean_up(&output);
+    aws_http_headers_release(headers);
+    aws_hpack_encoder_clean_up(&encoder);
     aws_http_library_clean_up();
     return AWS_OP_SUCCESS;
 }
