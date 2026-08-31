@@ -44,10 +44,6 @@ struct aws_websocket_decoder {
     bool processing_text_message;
     struct aws_utf8_decoder *text_message_validator;
 
-    /* Validates the UTF-8 "reason" phrase of a CLOSE frame's payload. This is separate from
-     * text_message_validator because a CLOSE frame may arrive in the middle of a fragmented TEXT message. */
-    struct aws_utf8_decoder *close_reason_validator;
-
     void *user_data;
     aws_websocket_decoder_frame_fn *on_frame;
     aws_websocket_decoder_payload_fn *on_payload;

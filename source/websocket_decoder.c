@@ -302,17 +302,6 @@ static int s_validate_close_frame_payload(struct aws_websocket_decoder *decoder,
         }
     }
 
-    /* Anything after the status code is the "reason" phrase, which MUST be valid UTF-8. */
-    if (payload.len > 0) {
-        if (aws_utf8_decoder_update(decoder->close_reason_validator, payload)) {
-            AWS_LOGF_ERROR(
-                AWS_LS_HTTP_WEBSOCKET,
-                "id=%p: Received CLOSE frame with invalid UTF-8 reason phrase",
-                (void *)decoder->user_data);
-            return aws_raise_error(AWS_ERROR_HTTP_WEBSOCKET_PROTOCOL_ERROR);
-        }
-    }
-
     return AWS_OP_SUCCESS;
 }
 
@@ -329,8 +318,6 @@ static int s_state_payload_check(struct aws_websocket_decoder *decoder, struct a
                 (void *)decoder->user_data);
             return aws_raise_error(AWS_ERROR_HTTP_WEBSOCKET_PROTOCOL_ERROR);
         }
-
-        aws_utf8_decoder_reset(decoder->close_reason_validator);
     }
 
     /* Invoke on_frame() callback to inform user of non-payload data. */
@@ -427,17 +414,6 @@ static int s_state_frame_end(struct aws_websocket_decoder *decoder, struct aws_b
         decoder->processing_text_message = false;
     }
 
-    /* A CLOSE frame's reason phrase must be complete, valid UTF-8 */
-    if (decoder->current_frame.opcode == AWS_WEBSOCKET_OPCODE_CLOSE) {
-        if (aws_utf8_decoder_finalize(decoder->close_reason_validator)) {
-            AWS_LOGF_ERROR(
-                AWS_LS_HTTP_WEBSOCKET,
-                "id=%p: Received CLOSE frame with invalid UTF-8 reason phrase (incomplete encoding)",
-                (void *)decoder->user_data);
-            return aws_raise_error(AWS_ERROR_HTTP_WEBSOCKET_PROTOCOL_ERROR);
-        }
-    }
-
     /* Done! */
     decoder->state = AWS_WEBSOCKET_DECODER_STATE_DONE;
     return AWS_OP_SUCCESS;
@@ -498,11 +474,9 @@ void aws_websocket_decoder_init(
     decoder->on_frame = on_frame;
     decoder->on_payload = on_payload;
     decoder->text_message_validator = aws_utf8_decoder_new(alloc, NULL /*options*/);
-    decoder->close_reason_validator = aws_utf8_decoder_new(alloc, NULL /*options*/);
 }
 
 void aws_websocket_decoder_clean_up(struct aws_websocket_decoder *decoder) {
     aws_utf8_decoder_destroy(decoder->text_message_validator);
-    aws_utf8_decoder_destroy(decoder->close_reason_validator);
     AWS_ZERO_STRUCT(*decoder);
 }
