@@ -4,6 +4,8 @@
  */
 #include <aws/http/private/hpack.h>
 
+/* #TODO test empty strings */
+
 /* RFC-7540 6.5.2 */
 const size_t s_hpack_dynamic_table_initial_size = 4096;
 const size_t s_hpack_dynamic_table_initial_elements = 512;
